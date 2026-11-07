@@ -39,14 +39,20 @@
 
 ```
 word-breaker/
-├── index.html          ← 双击这个文件开始玩
+├── index.html            ← 双击这个文件开始玩
+├── manifest.json         ← PWA 应用配置（名称、图标、截图）
+├── service-worker.js     ← 离线缓存
+├── icon-192.png          ← App 图标（192×192）
+├── icon-512.png          ← App 图标（512×512）
+├── screenshot-wide.png   ← 横屏展示截图
+├── screenshot-narrow.png ← 竖屏展示截图
 ├── css/
-│   └── style.css       ← 页面、按钮、闪卡、结算页样式
+│   └── style.css         ← 页面、按钮、闪卡、结算页样式
 ├── js/
-│   ├── words-data.js   ← 词库（家长主要改这个文件）
-│   ├── audio.js        ← 合成音效 + 单词朗读
-│   └── main.js         ← 游戏逻辑、关卡流程、难度参数
-└── README.md           ← 本说明
+│   ├── words-data.js     ← 词库（家长主要改这个文件）
+│   ├── audio.js          ← 合成音效 + 单词朗读
+│   └── main.js           ← 游戏逻辑、关卡流程、难度参数
+└── README.md             ← 本说明
 ```
 
 请不要改动文件的相对位置和 `<script>` 引入顺序。
@@ -155,7 +161,28 @@ localStorage.removeItem('wordBreakerStats');
 
 然后刷新页面即可。所有存储操作都有异常保护，即使浏览器禁用了 `localStorage`，游戏也能正常玩。
 
-## 八、常见问题
+## 八、PWA 与打包成 App
+
+本项目已经包含 PWA（可安装网页应用）所需的基础文件：
+
+- `manifest.json`：应用名称、图标、截图、主题色等；
+- `service-worker.js`：缓存游戏文件，断网也能打开；
+- `icon-192.png` / `icon-512.png`：真实图片图标；
+- `screenshot-wide.png` / `screenshot-narrow.png`：PWABuilder 展示截图。
+
+打包成 APK 的推荐流程：
+
+1. 把代码推送到 GitHub；
+2. 在仓库 **Settings → Pages** 中启用 GitHub Pages（分支 `main`，目录 `/ (root)`）；
+3. 用得到的 HTTPS 地址（例如 `https://用户名.github.io/Arkanoid/`）在 [PWABuilder](https://www.pwabuilder.com/) 中生成 Android 包；
+4. 下载 APK / AAB。
+
+**重要：更新游戏后请修改缓存版本。**
+`service-worker.js` 顶部的 `CACHE_NAME` 现在是 `xiaoyou-brick-v1`。每次修改 HTML/CSS/JS/图片并推送后，把它改成 `v2`、`v3`……，否则已经安装过的浏览器可能继续使用旧缓存。
+
+Service Worker 只在 `https://`（或本机开发服务器）下生效；直接双击 `index.html` 用 `file://` 打开时会自动跳过，不影响本地游玩。
+
+## 九、常见问题
 
 **双击打不开或页面空白？**
 确认 `index.html`、`css/`、`js/` 三个部分都在同一个 `word-breaker` 文件夹内，没有被单独移动。
@@ -174,7 +201,7 @@ localStorage.removeItem('wordBreakerStats');
 
 ---
 
-## 九、给家长的说明
+## 十、给家长的说明
 
 - 游戏的目标是让孩子在“找对应单词”的过程中反复认读，不追求高难度操作，因此错误的单词砖不会扣命。
 - 目标选择会自动避开被完全包围、小球打不到的砖块，不会出现“怎么打都过不了”的死局。
