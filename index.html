@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+  />
+  <title>小又的打砖块游戏</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- 顶部信息栏 -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">🧱</span>
+        <div class="brand-text">
+          <h1>小又的打砖块</h1>
+          <p class="brand-sub" id="unitLabel">Unit 1 · 运动与时间</p>
+        </div>
+      </div>
+
+      <div class="stats" aria-live="polite">
+        <div class="stat stat-score">
+          <span class="stat-label">得分</span>
+          <strong class="stat-value" id="scoreValue">0</strong>
+        </div>
+        <div class="stat stat-lives">
+          <span class="stat-label">生命</span>
+          <strong class="stat-value" id="livesValue" aria-label="剩余 3 条命">❤❤❤</strong>
+        </div>
+      </div>
+    </header>
+
+    <!-- 游戏区域 -->
+    <main class="stage" id="stage">
+      <div class="canvas-wrap">
+        <canvas id="gameCanvas" aria-label="打砖块游戏区域"></canvas>
+      </div>
+    </main>
+
+    <!-- 操作提示 -->
+    <footer class="hint-bar">
+      <span>👆 左右拖动滑块</span>
+      <span>点击 / 轻触发球</span>
+      <span class="hint-keyboard">← → 移动 · 空格发球</span>
+    </footer>
+  </div>
+
+  <!-- 开始页 -->
+  <div class="screen" id="startScreen" role="dialog" aria-modal="true" aria-labelledby="startTitle">
+    <div class="screen-card start-card">
+      <div class="start-hero">
+        <div class="start-icon" aria-hidden="true">🧱</div>
+        <h2 class="start-title" id="startTitle">小又的打砖块</h2>
+        <p class="start-subtitle">先选一个 Unit，用小球击中正确的单词砖！</p>
+      </div>
+
+      <div class="unit-grid" id="unitGrid" role="group" aria-label="选择 Unit"></div>
+
+      <label class="slow-toggle" for="slowModeToggle">
+        <span class="slow-copy">
+          <strong>慢速模式</strong>
+          <small>小球速度降低 30%，适合低龄</small>
+        </span>
+        <input type="checkbox" id="slowModeToggle" />
+        <span class="switch-track" aria-hidden="true">
+          <span class="switch-thumb"></span>
+        </span>
+      </label>
+
+      <button class="btn btn-primary btn-large" id="startBtn" type="button">开始游戏</button>
+
+      <button class="btn btn-secondary btn-review" id="reviewBtn" type="button">
+        <span aria-hidden="true">📕</span>
+        <span id="reviewBtnText">错词复习</span>
+      </button>
+      <p class="review-note" id="reviewNote" role="status"></p>
+
+      <p class="start-tip">提示：先看顶部的中文目标，再击中对应的英文单词砖。</p>
+    </div>
+  </div>
+
+  <!-- 预习 / 复习闪卡 -->
+  <div class="screen hidden" id="flashScreen" role="dialog" aria-modal="true" aria-labelledby="flashTitle">
+    <div class="screen-card flash-card">
+      <div class="flash-header">
+        <div>
+          <h2 class="flash-title" id="flashTitle">预习时间</h2>
+          <p class="flash-subtitle" id="flashSubtitle">先看看这些单词，8 秒后开始游戏</p>
+        </div>
+        <div class="flash-timer" id="flashTimer" aria-label="剩余秒数">8</div>
+      </div>
+
+      <div class="flash-grid" id="flashGrid"></div>
+
+      <div class="flash-actions">
+        <button class="btn btn-ghost" id="flashSkipBtn" type="button">跳过预习</button>
+        <button class="btn btn-primary hidden" id="flashContinueBtn" type="button">查看成绩</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 总结算页 -->
+  <div class="screen hidden" id="summaryScreen" role="dialog" aria-modal="true" aria-labelledby="summaryTitle">
+    <div class="screen-card summary-card">
+      <div class="summary-emoji" id="summaryEmoji" aria-hidden="true">🎉</div>
+      <h2 class="summary-title" id="summaryTitle">本关完成！</h2>
+      <p class="summary-subtitle" id="summarySubtitle"></p>
+
+      <div class="summary-stats">
+        <div class="summary-stat">
+          <span>得分</span>
+          <strong id="summaryScore">0</strong>
+        </div>
+        <div class="summary-stat">
+          <span>正确率</span>
+          <strong id="summaryAccuracy">0%</strong>
+        </div>
+        <div class="summary-stat">
+          <span>击中正确 / 总击中</span>
+          <strong id="summaryHits">0 / 0</strong>
+        </div>
+      </div>
+
+      <div class="summary-actions">
+        <button class="btn btn-primary" id="nextLevelBtn" type="button">下一关</button>
+        <button class="btn btn-secondary" id="replayLevelBtn" type="button">重玩本关</button>
+        <button class="btn btn-ghost" id="homeBtn" type="button">回到首页</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 按顺序加载：词库 → 音效 → 游戏主逻辑 -->
+  <script src="js/words-data.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
