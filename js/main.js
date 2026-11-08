@@ -14,7 +14,6 @@
      · 总结算页（得分、正确率），支持下一关 / 重玩 / 回首页
      · 连击计数、连击加分、连击 ≥3 时小球加速
      · 击中砖块的粒子与柔和光圈反馈
-     · localStorage 错词记录 + 错词复习关
      · 目标死局检测：自动改选能被小球打到的外层砖块
 
    本版新增：
@@ -37,8 +36,7 @@ const CONFIG = {
   WRONG_FLASH_MS: 320,          // 击错砖时红色提示的时长（毫秒）
   BRICKS_PER_ROW: 4,            // 每排固定 4 块砖，难度决定排数（1~4 排）
   PREVIEW_SECONDS: 8,           // 每关开始前的预习总时长（秒）
-  REVIEW_STEP_MS: 1400,         // 复习闪卡每张停留时长（毫秒）
-  REVIEW_MIN_WORDS: 4,          // 至少积累多少个错词才能开始错词复习
+  REVIEW_STEP_MS: 1400,         // 过关复习闪卡每张停留时长（毫秒）
   SLOW_MODE_FACTOR: 0.7,        // 慢速模式速度倍率（约降低 30%）
   BALL_RADIUS: 12,              // 小球半径（逻辑像素）
   BALL_SPEED: 430,              // 小球速度（逻辑像素 / 秒），越大越快
@@ -73,11 +71,6 @@ const DIFFICULTIES = {
 // 小球从滑块反弹时的最大角度（60°）
 const MAX_BOUNCE_ANGLE = Math.PI / 3;
 
-// 错词统计存放在 localStorage 的这个键下
-const STATS_KEY = 'wordBreakerStats';
-// “错词复习关”使用的虚拟 Unit 键（不对应 WORD_DATA 里的真实 Unit）
-const REVIEW_UNIT_KEY = 'review';
-
 // 目标可达性检测的采样步长（像素）。砖块缝隙只有 10~14px，
 // 小球直径 24px 钻不过去，用 8px 采样可以准确封住缝隙。
 const REACH_SAMPLE_STEP = 8;
@@ -99,9 +92,6 @@ const difficultyOptions = document.getElementById('difficultyOptions');
 const startTip = document.getElementById('startTip');
 const slowModeToggle = document.getElementById('slowModeToggle');
 const startBtn = document.getElementById('startBtn');
-const reviewBtn = document.getElementById('reviewBtn');
-const reviewBtnText = document.getElementById('reviewBtnText');
-const reviewNote = document.getElementById('reviewNote');
 
 const flashScreen = document.getElementById('flashScreen');
 const flashTitle = document.getElementById('flashTitle');
@@ -153,7 +143,6 @@ let isSlowMode = false;
 let levelActive = false;          // 只有真正在玩时才允许发球
 let levelWords = [];              // 本关实际铺上砖块的单词（预习/复习用）
 let levelStats = { correct: 0, wrong: 0 }; // 本关击中统计（结算正确率）
-let reviewLevelWords = [];        // 当前错词复习关使用的单词（“重玩本关”时复用）
 
 let combo = 0;                    // 当前连击数：击错砖或漏球清零
 let comboChangedAt = 0;           // 连击变化的时刻，用于连击提示的轻弹动画
@@ -273,8 +262,6 @@ function rebuildBricks(words) {
       zh: item.zh,
       pos: item.pos,
       emoji: item.emoji || '',
-      // 普通关卡回退到 currentUnitKey；错词复习关的单词自带原 Unit 键
-      unitKey: item.unitKey || currentUnitKey,
       alive: true,
       wrongFlashUntil: 0,
       x: 0,
@@ -608,132 +595,6 @@ function updateCombo(nextCombo) {
 }
 
 /* =========================================================
-   三·五、错词记录（localStorage）
-   ---------------------------------------------------------
-   数据结构（key = wordBreakerStats）：
-     {
-       "unit1::jump": { "correct": 3, "wrong": 1 },
-       "unit3::cold": { "correct": 0, "wrong": 2 }
-     }
-   错词 = wrong > 0 的单词；按错误次数从多到少生成复习关。
-   ========================================================= */
-
-/** 读取错词统计；localStorage 不可用时返回空对象 */
-function loadWordStats() {
-  try {
-    const raw = window.localStorage.getItem(STATS_KEY);
-    if (!raw) return {};
-
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return parsed;
-  } catch (error) {
-    // 隐私模式或部分浏览器的 file:// 环境会禁用 localStorage
-    return {};
-  }
-}
-
-/** 保存错词统计；失败时静默跳过，不影响游戏 */
-function saveWordStats(stats) {
-  try {
-    window.localStorage.setItem(STATS_KEY, JSON.stringify(stats));
-  } catch (error) {
-    // 存储不可用时只丢失统计，不影响继续玩
-  }
-}
-
-/** 同一个英文单词在不同 Unit 可能有不同含义，所以统计键带上 Unit */
-function makeWordStatsKey(unitKey, word) {
-  return `${unitKey}::${word}`;
-}
-
-/** 记录一次命中：correct 为 true 表示击中目标砖 */
-function recordWordResult(brick, correct) {
-  const unitKey = brick.unitKey || currentUnitKey;
-
-  // 防御：复习关的砖块都应带原始 Unit 键
-  if (!unitKey || unitKey === REVIEW_UNIT_KEY || !brick.word) return;
-
-  const stats = loadWordStats();
-  const key = makeWordStatsKey(unitKey, brick.word);
-  const previous = stats[key] && typeof stats[key] === 'object' ? stats[key] : {};
-  const correctCount = Number(previous.correct) || 0;
-  const wrongCount = Number(previous.wrong) || 0;
-
-  stats[key] = {
-    correct: correctCount + (correct ? 1 : 0),
-    wrong: wrongCount + (correct ? 0 : 1)
-  };
-
-  saveWordStats(stats);
-}
-
-/**
- * 汇总所有历史错词。
- * 返回带 original Unit 信息的单词列表，按错误次数从多到少排序。
- */
-function getReviewWords() {
-  const stats = loadWordStats();
-  const wrongWords = [];
-
-  Object.keys(WORD_DATA).forEach((unitKey) => {
-    const unit = WORD_DATA[unitKey];
-    if (!unit || !Array.isArray(unit.words)) return;
-
-    unit.words.forEach((item) => {
-      const entry = stats[makeWordStatsKey(unitKey, item.word)];
-      if (!entry || typeof entry !== 'object') return;
-
-      const wrongCount = Number(entry.wrong) || 0;
-      if (wrongCount <= 0) return;
-
-      wrongWords.push({
-        ...item,
-        unitKey,
-        unitTitle: unit.title || `Unit ${unit.unit}`,
-        wrongCount,
-        correctCount: Number(entry.correct) || 0
-      });
-    });
-  });
-
-  wrongWords.sort(
-    (a, b) =>
-      b.wrongCount - a.wrongCount || a.word.localeCompare(b.word)
-  );
-
-  return wrongWords;
-}
-
-/** 刷新开始页“错词复习”按钮的文字和说明 */
-function refreshReviewEntry() {
-  const wrongWords = getReviewWords();
-  const total = wrongWords.length;
-  const maxBricks = getMaxBricks();
-  const canReview = total >= CONFIG.REVIEW_MIN_WORDS;
-  const levelCount = Math.min(total, maxBricks);
-
-  reviewBtnText.textContent = canReview
-    ? `错词复习（${levelCount} 个）`
-    : '错词复习（暂无）';
-  reviewNote.classList.remove('is-alert');
-
-  if (canReview) {
-    reviewNote.textContent =
-      total > maxBricks
-        ? `已收集 ${total} 个错词，本次复习最常错的 ${levelCount} 个。`
-        : `已收集 ${total} 个错词，点击上面的按钮开始复习。`;
-  } else if (total === 0) {
-    reviewNote.textContent = '还没有错词记录，先玩一关再来吧。';
-  } else {
-    reviewNote.textContent = `已记录 ${total} 个错词，至少 ${CONFIG.REVIEW_MIN_WORDS} 个才能开始复习。`;
-  }
-}
-
-/* =========================================================
    四、关卡流程：开始页 → 预习 → 游戏 → 复习 → 结算
    ========================================================= */
 
@@ -826,7 +687,6 @@ function selectDifficulty(difficultyKey) {
   refreshDifficultyUI();
   buildUnitGrid();
   refreshUnitSelectionUI();
-  refreshReviewEntry();
 
   if (uiMode === 'start') {
     loadUnit(selectedUnitKey);
@@ -839,7 +699,6 @@ function selectUnit(unitKey) {
 
   selectedUnitKey = unitKey;
   refreshUnitSelectionUI();
-  refreshReviewEntry();
   loadUnit(unitKey);
 }
 
@@ -865,64 +724,6 @@ function startLevel(unitKey) {
   showPreview();
 }
 
-/**
- * 载入错词复习关。
- * preferredWords 用于“重玩本关”时复用同一批单词；
- * 不传时重新从历史错词中挑选。
- */
-function loadReviewLevel(preferredWords) {
-  let words = Array.isArray(preferredWords)
-    ? preferredWords.slice()
-    : getReviewWords();
-
-  // 防御：过滤掉词库中已经不存在的单词
-  words = words.filter(
-    (item) => item && item.word && item.unitKey && WORD_DATA[item.unitKey]
-  );
-
-  if (words.length < CONFIG.REVIEW_MIN_WORDS) {
-    return false;
-  }
-
-  words = words.slice(0, getMaxBricks());
-
-  currentUnitKey = REVIEW_UNIT_KEY;
-  reviewLevelWords = words.slice();
-  levelWords = shuffle(words);
-  levelStats = { correct: 0, wrong: 0 };
-
-  rebuildBricks(levelWords);
-  resetGame();
-
-  const label = `错词复习 · ${levelWords.length} 个单词`;
-  unitLabel.textContent = label;
-  document.title = `小又的打砖块 · ${label}`;
-
-  return true;
-}
-
-/** 开始错词复习关：载入错词 → 预习闪卡 */
-function startReviewLevel(preferredWords) {
-  levelToken += 1;
-  clearTimeout(levelEndTimer);
-  levelEndTimer = 0;
-  stopFlashSession();
-  stopTargetSpeech();
-
-  if (!loadReviewLevel(preferredWords)) {
-    showStartScreen();
-    reviewNote.textContent = `错词还不够 ${CONFIG.REVIEW_MIN_WORDS} 个，先去玩几关再来复习吧！`;
-    reviewNote.classList.add('is-alert');
-    return;
-  }
-
-  startScreen.classList.add('hidden');
-  summaryScreen.classList.add('hidden');
-  levelActive = false;
-
-  showPreview();
-}
-
 /** 预习闪卡：8 秒倒计时，依次高亮并朗读单词 */
 function showPreview() {
   stopFlashSession();
@@ -935,10 +736,7 @@ function showPreview() {
   summaryScreen.classList.add('hidden');
 
   flashTitle.textContent = '预习时间';
-  flashSubtitle.textContent =
-    currentUnitKey === REVIEW_UNIT_KEY
-      ? `再认一认这些容易弄错的单词，${CONFIG.PREVIEW_SECONDS} 秒后开始游戏`
-      : `先看看这些单词，${CONFIG.PREVIEW_SECONDS} 秒后开始游戏`;
+  flashSubtitle.textContent = `先看看这些单词，${CONFIG.PREVIEW_SECONDS} 秒后开始游戏`;
   flashTimer.classList.remove('hidden');
   flashTimer.textContent = String(CONFIG.PREVIEW_SECONDS);
   flashSkipBtn.textContent = '跳过预习';
@@ -1164,19 +962,13 @@ function showSummary(passed) {
   const accuracy =
     totalHits > 0 ? Math.round((levelStats.correct / totalHits) * 100) : 0;
   const nextKey = getNextUnitKey(currentUnitKey);
-  const isReviewLevel = currentUnitKey === REVIEW_UNIT_KEY;
 
   summaryScore.textContent = String(score);
   summaryAccuracy.textContent = `${accuracy}%`;
   summaryHits.textContent = `${levelStats.correct} / ${totalHits}`;
 
   if (passed) {
-    if (isReviewLevel) {
-      summaryEmoji.textContent = '🎉';
-      summaryTitle.textContent = '复习完成！';
-      summarySubtitle.textContent = '这些容易弄错的单词，你都认出来啦！';
-      nextLevelBtn.classList.add('hidden');
-    } else if (nextKey) {
+    if (nextKey) {
       summaryEmoji.textContent = '🎉';
       summaryTitle.textContent = '本关完成！';
       summarySubtitle.textContent = '所有单词砖都清空啦，准备好挑战下一关吧！';
@@ -1190,9 +982,7 @@ function showSummary(passed) {
   } else {
     summaryEmoji.textContent = '😅';
     summaryTitle.textContent = '别灰心，再来一次';
-    summarySubtitle.textContent = isReviewLevel
-      ? '生命用完了。再复习一次这些容易弄错的单词吧！'
-      : '生命用完了。复习一下本关单词，再挑战一次吧！';
+    summarySubtitle.textContent = '生命用完了。复习一下本关单词，再挑战一次吧！';
     nextLevelBtn.classList.add('hidden');
   }
 
@@ -1231,9 +1021,8 @@ function showStartScreen() {
   refreshUnitSelectionUI();
   refreshModeUI();
   refreshDifficultyUI();
-  refreshReviewEntry();
 
-  // 从错词复习关回到首页时，把顶栏和标签页标题恢复成当前选中的 Unit
+  // 把顶栏和标签页标题恢复成当前选中的 Unit
   const unit = WORD_DATA[selectedUnitKey];
   if (unit) {
     const title = unit.title || `Unit ${unit.unit}`;
@@ -1439,7 +1228,6 @@ function handleCorrectHit(brick) {
   resolveBrickBounce(brick);
 
   levelStats.correct += 1;
-  recordWordResult(brick, true);
   updateCombo(combo + 1);
 
   // 连击加成：第 1 次只得基础分，之后每次 +2 分，最高额外 +20 分
@@ -1487,7 +1275,6 @@ function handleWrongHit(brick) {
   resolveBrickBounce(brick);
 
   levelStats.wrong += 1;
-  recordWordResult(brick, false);
   updateCombo(0);
 
   if (window.GameAudio) {
@@ -2523,23 +2310,6 @@ startBtn.addEventListener('click', () => {
   startLevel(selectedUnitKey);
 });
 
-reviewBtn.addEventListener('click', () => {
-  const wrongWords = getReviewWords();
-
-  if (wrongWords.length < CONFIG.REVIEW_MIN_WORDS) {
-    reviewNote.textContent = `错词还不够 ${CONFIG.REVIEW_MIN_WORDS} 个，先去玩几关再来复习吧！`;
-    reviewNote.classList.add('is-alert');
-    return;
-  }
-
-  if (window.GameAudio) {
-    GameAudio.unlock();
-  }
-
-  isSlowMode = slowModeToggle.checked;
-  startReviewLevel(wrongWords);
-});
-
 slowModeToggle.addEventListener('change', () => {
   isSlowMode = slowModeToggle.checked;
 });
@@ -2578,11 +2348,7 @@ replayLevelBtn.addEventListener('click', () => {
     GameAudio.unlock();
   }
 
-  if (currentUnitKey === REVIEW_UNIT_KEY) {
-    startReviewLevel(reviewLevelWords);
-  } else {
-    startLevel(currentUnitKey);
-  }
+  startLevel(currentUnitKey);
 });
 
 homeBtn.addEventListener('click', () => {
@@ -2622,7 +2388,6 @@ function init() {
   refreshUnitSelectionUI();
   refreshModeUI();
   refreshDifficultyUI();
-  refreshReviewEntry();
   fitCanvas();
 
   // 开始页背后先放好当前 Unit 的砖块，点“开始游戏”后直接进入预习

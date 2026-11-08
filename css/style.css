@@ -485,40 +485,6 @@ body {
   font-size: 22px;
 }
 
-.btn.btn-review {
-  width: 100%;
-  margin-top: 10px;
-  padding: 12px 20px;
-  gap: 8px;
-  font-size: 17px;
-  color: #a35805;
-  background: #fff8ec;
-  border-color: #ffd3a1;
-  box-shadow: 0 5px 0 #ffd3a1;
-}
-
-.btn.btn-review:hover {
-  background: #fff1d9;
-}
-
-.btn.btn-review:active {
-  transform: translateY(3px);
-  box-shadow: 0 2px 0 #ffd3a1;
-}
-
-.review-note {
-  min-height: 18px;
-  margin: 8px 0 0;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.5;
-  color: #7d99ab;
-}
-
-.review-note.is-alert {
-  color: #d2574f;
-}
-
 .start-tip {
   margin: 12px 0 0;
   font-size: 12px;
