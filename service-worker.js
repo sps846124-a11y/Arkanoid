@@ -11,7 +11,7 @@
    否则浏览器可能一直使用旧缓存。
    ========================================================= */
 
-const CACHE_NAME = 'xiaoyou-brick-v1';
+const CACHE_NAME = 'xiaoyou-brick-v2';
 
 const APP_SHELL = [
   './',

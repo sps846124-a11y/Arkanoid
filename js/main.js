@@ -1,9 +1,9 @@
 'use strict';
 
 /* =========================================================
-   小又的打砖块游戏 —— 第 6 步：错词记录与复习关（已完成）
+   小又的打砖块游戏 —— 双向学习 + 难度选择版本
    ---------------------------------------------------------
-   已完成：
+   基础玩法：
      · 滑块拖动（鼠标 / 触屏 / 键盘）
      · 小球与墙壁、滑块、砖块反弹
      · 生命、得分、横竖屏自适应
@@ -17,8 +17,11 @@
      · localStorage 错词记录 + 错词复习关
      · 目标死局检测：自动改选能被小球打到的外层砖块
 
-   后续步骤：
-     第 7 步：README 与最终收尾
+   本版新增：
+     · 出题模式 A：看中文 + emoji，打英文单词砖（按词性配色）
+     · 出题模式 B：看 / 听英文 + emoji，打中文砖（统一浅蓝色）
+     · 难度选择：简单 1 排、普通 2 排、困难 3 排、地狱 4 排，
+       每排最多 4 块砖；开局从本关词库随机抽词
    ========================================================= */
 
 /* =========================================================
@@ -32,7 +35,7 @@ const CONFIG = {
   COMBO_SPEED_THRESHOLD: 3,     // 连击达到 3 次时开始加速
   COMBO_SPEED_BONUS: 0.1,       // 加速幅度：约提升 10%
   WRONG_FLASH_MS: 320,          // 击错砖时红色提示的时长（毫秒）
-  MAX_BRICKS: 18,               // 每关最多砖块数（横屏 3×6；竖屏 4 列）
+  BRICKS_PER_ROW: 4,            // 每排固定 4 块砖，难度决定排数（1~4 排）
   PREVIEW_SECONDS: 8,           // 每关开始前的预习总时长（秒）
   REVIEW_STEP_MS: 1400,         // 复习闪卡每张停留时长（毫秒）
   REVIEW_MIN_WORDS: 4,          // 至少积累多少个错词才能开始错词复习
@@ -43,6 +46,8 @@ const CONFIG = {
   PADDLE_KEYBOARD_SPEED: 760,   // 键盘移动滑块速度
   PADDLE_HIT_PAD: 18,           // 滑块左右额外判定宽度（儿童友好）
   LEVEL_END_DELAY_MS: 650,      // 过关/失败后，稍等再弹出复习闪卡
+  TARGET_SPEAK_START_DELAY_MS: 250, // 模式 B 开局朗读目标单词的延迟
+  TARGET_SPEAK_DELAY_MS: 1300,  // 模式 B 换目标后朗读新单词的延迟
   PARTICLE_COUNT: 12,           // 每次击中目标砖喷出的粒子数量
   MAX_DPR: 2                    // 高分屏最多按 2 倍像素渲染，避免卡顿
 };
@@ -50,6 +55,20 @@ const CONFIG = {
 // 横屏、竖屏两套逻辑分辨率；画面会等比缩放填满可用区域
 const WORLD_LANDSCAPE = { width: 960, height: 640 };
 const WORLD_PORTRAIT = { width: 720, height: 960 };
+
+// 出题模式：A = 中文找英文（默认）；B = 英文找中文
+const GAME_MODES = {
+  A: { label: '中文找英文', targetHint: '找出这个意思的单词' },
+  B: { label: '英文找中文', targetHint: '听一听，找出这个单词的中文' }
+};
+
+// 难度只决定砖块排数；每排最多 4 块，所以最多 16 块
+const DIFFICULTIES = {
+  easy:   { rows: 1, label: '简单' },
+  normal: { rows: 2, label: '普通' },
+  hard:   { rows: 3, label: '困难' },
+  hell:   { rows: 4, label: '地狱' }
+};
 
 // 小球从滑块反弹时的最大角度（60°）
 const MAX_BOUNCE_ANGLE = Math.PI / 3;
@@ -59,7 +78,7 @@ const STATS_KEY = 'wordBreakerStats';
 // “错词复习关”使用的虚拟 Unit 键（不对应 WORD_DATA 里的真实 Unit）
 const REVIEW_UNIT_KEY = 'review';
 
-// 目标可达性检测的采样步长（像素）。砖块缝隙只有 12px，
+// 目标可达性检测的采样步长（像素）。砖块缝隙只有 10~14px，
 // 小球直径 24px 钻不过去，用 8px 采样可以准确封住缝隙。
 const REACH_SAMPLE_STEP = 8;
 
@@ -75,6 +94,9 @@ const unitLabel = document.getElementById('unitLabel');
 
 const startScreen = document.getElementById('startScreen');
 const unitGrid = document.getElementById('unitGrid');
+const modeOptions = document.getElementById('modeOptions');
+const difficultyOptions = document.getElementById('difficultyOptions');
+const startTip = document.getElementById('startTip');
 const slowModeToggle = document.getElementById('slowModeToggle');
 const startBtn = document.getElementById('startBtn');
 const reviewBtn = document.getElementById('reviewBtn');
@@ -121,8 +143,11 @@ let lastTime = performance.now();
 
 let selectedUnitKey = 'unit1';
 let currentUnitKey = 'unit1';
+let selectedMode = 'A';           // 出题模式：A / B
+let selectedDifficulty = 'normal'; // 难度：easy / normal / hard / hell
 let currentTargetBrick = null;
 let targetChangedAt = 0;
+let targetSpeechTimer = 0;        // 模式 B 朗读目标的延时计时器
 
 let isSlowMode = false;
 let levelActive = false;          // 只有真正在玩时才允许发球
@@ -176,6 +201,38 @@ const BRICK_STYLES = {
   other: { top: '#dbe3eb', bottom: '#aebbc9', text: '#3b4a59' }
 };
 
+// 模式 B 所有砖块统一使用浅蓝色，避免词性配色泄露答案
+const BRICK_STYLE_UNIFIED = {
+  top: '#c9edff',
+  bottom: '#8ed4f6',
+  text: '#0b4f7a'
+};
+
+/** 当前模式下砖块使用的配色 */
+function getBrickStyle(brick) {
+  return selectedMode === 'B'
+    ? BRICK_STYLE_UNIFIED
+    : BRICK_STYLES[brick.pos] || BRICK_STYLES.other;
+}
+
+/** 当前模式下砖块上显示的文字：模式 A 英文，模式 B 中文 */
+function getBrickDisplayText(brick) {
+  return selectedMode === 'B'
+    ? brick.zh || brick.word || ''
+    : brick.word || '';
+}
+
+/** 砖块文字字体：中文用界面字体，英文用单词字体 */
+function getBrickFontFamily() {
+  return selectedMode === 'B' ? UI_FONT_FAMILY : BRICK_FONT_FAMILY;
+}
+
+/** 当前难度允许的最大砖块数 */
+function getMaxBricks() {
+  const difficulty = DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal;
+  return difficulty.rows * CONFIG.BRICKS_PER_ROW;
+}
+
 /* =========================================================
    三、初始化与画布尺寸
    ========================================================= */
@@ -195,31 +252,14 @@ function shuffle(list) {
 }
 
 /**
- * 从某个 Unit 的单词里挑出本关要铺的单词。
- * 规则：
- *   1. 单词不超过 18 个：全部上砖；
- *   2. 超过 18 个：优先保留 key: true 的核心词，
- *      剩余名额从其他单词里随机补足；
- *   3. 核心词本身超过 18 个时，从中随机取 18 个。
- * 最后再打乱顺序，让每次开局的砖块位置不同。
+ * 从本关词库中随机抽取本关需要的单词。
+ * 数量由难度决定（1~4 排、每排 4 块）；
+ * 词库单词不足时按实际数量生成，砖块整体居中。
  */
 function selectWordsForUnit(words, maxBricks) {
   if (!Array.isArray(words) || words.length === 0) return [];
 
-  if (words.length <= maxBricks) {
-    return shuffle(words);
-  }
-
-  const keyWords = shuffle(words.filter((item) => item.key === true));
-  const otherWords = shuffle(words.filter((item) => item.key !== true));
-  const selected = keyWords.slice(0, maxBricks);
-
-  const remaining = maxBricks - selected.length;
-  if (remaining > 0) {
-    selected.push(...otherWords.slice(0, remaining));
-  }
-
-  return shuffle(selected);
+  return shuffle(words).slice(0, Math.max(0, maxBricks));
 }
 
 /** 用选中的单词重建砖块数组 */
@@ -265,7 +305,7 @@ function loadUnit(unitKey) {
   unitLabel.textContent = title;
   document.title = `小又的打砖块 · ${title}`;
 
-  levelWords = selectWordsForUnit(unit.words, CONFIG.MAX_BRICKS);
+  levelWords = selectWordsForUnit(unit.words, getMaxBricks());
   levelStats = { correct: 0, wrong: 0 };
 
   rebuildBricks(levelWords);
@@ -330,7 +370,7 @@ function fitCanvas() {
   // 旋转屏幕后旧的指针位置不再有效
   pointerTargetX = null;
 
-  // 横竖屏切换会改变砖块列数，重新检查目标是否会被围死
+  // 横竖屏切换会改变砖块尺寸，重新检查目标是否会被围死
   ensureTargetReachable();
 }
 
@@ -342,14 +382,15 @@ function layoutPaddle() {
   paddle.y = world.height - (world.isPortrait ? 104 : 58);
 }
 
-/** 按当前横竖屏重新排列砖块网格 */
+/** 按当前横竖屏重新排列砖块网格（每排最多 4 块，不足一整行时居中） */
 function layoutBricks() {
-  const cols = world.isPortrait ? 4 : 6;
-  const sideMargin = world.isPortrait ? 30 : 46;
-  const gap = 12;
+  const cols = CONFIG.BRICKS_PER_ROW;
+  const sideMargin = world.isPortrait ? 26 : 70;
+  const gap = world.isPortrait ? 10 : 14;
   // 顶部要留出目标卡片的位置
   const top = world.isPortrait ? 108 : 96;
-  const brickHeight = world.isPortrait ? 62 : 60;
+  const brickHeight = world.isPortrait ? 66 : 64;
+  const rowGap = world.isPortrait ? 10 : 12;
   const brickWidth =
     (world.width - sideMargin * 2 - gap * (cols - 1)) / cols;
 
@@ -357,13 +398,13 @@ function layoutBricks() {
     const col = brick.index % cols;
     const row = Math.floor(brick.index / cols);
 
-    // 最后一行不足一整行时，居中摆放
+    // 最后一行不足一整行时，整行居中摆放
     const countInRow = Math.min(cols, bricks.length - row * cols);
     const rowWidth = countInRow * brickWidth + (countInRow - 1) * gap;
     const rowStartX = (world.width - rowWidth) / 2;
 
     brick.x = rowStartX + col * (brickWidth + gap);
-    brick.y = top + row * (brickHeight + gap);
+    brick.y = top + row * (brickHeight + rowGap);
     brick.width = brickWidth;
     brick.height = brickHeight;
 
@@ -372,81 +413,126 @@ function layoutBricks() {
 }
 
 /**
- * 计算砖块文字的字号和换行方式。
- * 单词长的时候自动缩小字号；带空格的短语优先拆成两行。
- * 结果缓存在砖块对象上，窗口缩放时重新计算。
+ * 计算砖块文字的字号与换行方式。
+ * 模式 A 显示英文（按单词换行），模式 B 显示中文（按字换行）；
+ * 在 1~3 行之间寻找能放下的最大字号。
+ * 结果缓存在砖块对象上，窗口缩放或切换模式时重新计算。
  */
 function updateBrickTextLayout(brick) {
-  const word = brick.word || '';
+  const text = getBrickDisplayText(brick);
+  const fontFamily = getBrickFontFamily();
   const maxTextWidth = Math.max(20, brick.width - 18);
   const maxTextHeight = Math.max(20, brick.height - 14);
   const maxFontSize = Math.min(24, brick.height * 0.42);
-  const minFontSize = 10;
+  const minFontSize = 9;
 
-  // 先尝试一行，宽度不够就逐步缩小字号
-  let fontSize = maxFontSize;
-  let lines = [word];
+  let best = null;
 
-  measureCtx.font = `700 ${fontSize}px ${BRICK_FONT_FAMILY}`;
-  while (
-    measureCtx.measureText(word).width > maxTextWidth &&
-    fontSize > minFontSize
-  ) {
-    fontSize -= 0.5;
-    measureCtx.font = `700 ${fontSize}px ${BRICK_FONT_FAMILY}`;
-  }
+  // 分别尝试 1 行、2 行、3 行，取能放下的最大字号
+  for (let lineCount = 1; lineCount <= 3; lineCount += 1) {
+    let fontSize = maxFontSize;
 
-  // 带空格的短语：如果一行显得太小，尝试拆成两行，通常更清楚
-  if (word.includes(' ') && fontSize < maxFontSize * 0.92) {
-    const twoLines = splitIntoTwoLines(word);
-    let twoLineSize = maxFontSize;
+    while (fontSize >= minFontSize) {
+      const lineHeight = fontSize * 1.08;
 
-    while (twoLineSize > minFontSize) {
-      measureCtx.font = `700 ${twoLineSize}px ${BRICK_FONT_FAMILY}`;
+      if (lineHeight * lineCount <= maxTextHeight) {
+        const lines = wrapBrickText(
+          text,
+          maxTextWidth,
+          lineCount,
+          fontSize,
+          fontFamily
+        );
 
-      const widestLine = Math.max(
-        ...twoLines.map((line) => measureCtx.measureText(line).width)
-      );
-      const totalHeight = twoLineSize * 1.08 * twoLines.length;
-
-      if (widestLine <= maxTextWidth && totalHeight <= maxTextHeight) {
-        break;
+        if (lines) {
+          if (!best || fontSize > best.fontSize + 0.01) {
+            best = { fontSize, lines };
+          }
+          break;
+        }
       }
 
-      twoLineSize -= 0.5;
-    }
-
-    if (twoLineSize > fontSize) {
-      fontSize = twoLineSize;
-      lines = twoLines;
+      fontSize -= 0.5;
     }
   }
 
-  brick.textLines = lines;
-  brick.textFontSize = fontSize;
-  brick.textLineHeight = fontSize * 1.08;
+  if (!best) {
+    best = { fontSize: minFontSize, lines: [text] };
+  }
+
+  brick.textLines = best.lines;
+  brick.textFontSize = best.fontSize;
+  brick.textLineHeight = best.fontSize * 1.08;
+  brick.textFontFamily = fontFamily;
 }
 
-/** 把带空格的短语拆成尽量均衡的两行 */
-function splitIntoTwoLines(word) {
-  const parts = word.split(/\s+/).filter(Boolean);
-  if (parts.length < 2) return [word];
+/**
+ * 把文字按最大宽度拆成不超过 maxLines 行。
+ * 有空格时按单词换行，没有空格（中文）时按字符换行；
+ * 单个单词/字符仍然过宽时按字符硬拆。放不下返回 null。
+ */
+function wrapBrickText(text, maxWidth, maxLines, fontSize, fontFamily) {
+  measureCtx.font = `700 ${fontSize}px ${fontFamily}`;
 
-  let bestLines = [word];
-  let bestDiff = Infinity;
+  const words = text.split(/\s+/).filter(Boolean);
+  const useSpaces = words.length > 1;
+  const tokens = useSpaces ? words : Array.from(text);
+  const lines = [];
+  let current = '';
 
-  for (let splitIndex = 1; splitIndex < parts.length; splitIndex += 1) {
-    const first = parts.slice(0, splitIndex).join(' ');
-    const second = parts.slice(splitIndex).join(' ');
-    const diff = Math.abs(first.length - second.length);
+  function pushCurrent() {
+    if (current) {
+      lines.push(current);
+      current = '';
+    }
+    return lines.length < maxLines;
+  }
 
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      bestLines = [first, second];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+
+    // 已经用满可用行数，却还有内容没放下
+    if (lines.length >= maxLines) return null;
+
+    const candidate = current
+      ? useSpaces
+        ? `${current} ${token}`
+        : current + token
+      : token;
+
+    if (measureCtx.measureText(candidate).width <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+
+    if (current && !pushCurrent()) return null;
+
+    // token 本身能放进一行，直接从新行开始
+    if (measureCtx.measureText(token).width <= maxWidth) {
+      current = token;
+      continue;
+    }
+
+    // 单个 token 过宽：按字符硬拆
+    const chars = Array.from(token);
+    for (let c = 0; c < chars.length; c += 1) {
+      if (lines.length >= maxLines) return null;
+
+      const next = current + chars[c];
+      if (current && measureCtx.measureText(next).width > maxWidth) {
+        if (!pushCurrent()) return null;
+      }
+
+      current += chars[c];
     }
   }
 
-  return bestLines;
+  if (current) {
+    if (lines.length >= maxLines) return null;
+    lines.push(current);
+  }
+
+  return lines.length > 0 ? lines : null;
 }
 
 /** 重开一局（生命、得分、砖块全部复位） */
@@ -626,8 +712,9 @@ function getReviewWords() {
 function refreshReviewEntry() {
   const wrongWords = getReviewWords();
   const total = wrongWords.length;
+  const maxBricks = getMaxBricks();
   const canReview = total >= CONFIG.REVIEW_MIN_WORDS;
-  const levelCount = Math.min(total, CONFIG.MAX_BRICKS);
+  const levelCount = Math.min(total, maxBricks);
 
   reviewBtnText.textContent = canReview
     ? `错词复习（${levelCount} 个）`
@@ -636,7 +723,7 @@ function refreshReviewEntry() {
 
   if (canReview) {
     reviewNote.textContent =
-      total > CONFIG.MAX_BRICKS
+      total > maxBricks
         ? `已收集 ${total} 个错词，本次复习最常错的 ${levelCount} 个。`
         : `已收集 ${total} 个错词，点击上面的按钮开始复习。`;
   } else if (total === 0) {
@@ -670,9 +757,9 @@ function buildUnitGrid() {
 
     const count = document.createElement('span');
     count.className = 'unit-count';
-    count.textContent = `本关 ${Math.min(
+    count.textContent = `本关最多 ${Math.min(
       unit.words.length,
-      CONFIG.MAX_BRICKS
+      getMaxBricks()
     )} 块砖 · 共 ${unit.words.length} 个单词`;
 
     button.appendChild(title);
@@ -692,6 +779,60 @@ function refreshUnitSelectionUI() {
   });
 }
 
+/** 刷新出题模式按钮的选中态和底部提示 */
+function refreshModeUI() {
+  Array.from(modeOptions.querySelectorAll('[data-mode]')).forEach((button) => {
+    const active = button.dataset.mode === selectedMode;
+    button.classList.toggle('is-selected', active);
+    button.setAttribute('aria-checked', String(active));
+  });
+
+  startTip.textContent =
+    selectedMode === 'B'
+      ? '提示：听一听、看一看顶部的英文单词，击中对应的中文砖块。'
+      : '提示：看顶部的中文目标，击中对应的英文单词砖。';
+}
+
+/** 刷新难度按钮的选中态 */
+function refreshDifficultyUI() {
+  Array.from(
+    difficultyOptions.querySelectorAll('[data-difficulty]')
+  ).forEach((button) => {
+    const active = button.dataset.difficulty === selectedDifficulty;
+    button.classList.toggle('is-selected', active);
+    button.setAttribute('aria-checked', String(active));
+  });
+}
+
+/** 切换出题模式：开始页背景的砖块同步换内容 */
+function selectMode(modeKey) {
+  if (!GAME_MODES[modeKey] || modeKey === selectedMode) return;
+
+  selectedMode = modeKey;
+  refreshModeUI();
+
+  if (uiMode === 'start') {
+    loadUnit(selectedUnitKey);
+  }
+}
+
+/** 切换难度：刷新各 Unit 的砖块数量说明和开始页背景 */
+function selectDifficulty(difficultyKey) {
+  if (!DIFFICULTIES[difficultyKey] || difficultyKey === selectedDifficulty) {
+    return;
+  }
+
+  selectedDifficulty = difficultyKey;
+  refreshDifficultyUI();
+  buildUnitGrid();
+  refreshUnitSelectionUI();
+  refreshReviewEntry();
+
+  if (uiMode === 'start') {
+    loadUnit(selectedUnitKey);
+  }
+}
+
 /** 在开始页点选一个 Unit（背景同步换成该 Unit 的砖块） */
 function selectUnit(unitKey) {
   if (!WORD_DATA[unitKey]) return;
@@ -708,6 +849,7 @@ function startLevel(unitKey) {
   clearTimeout(levelEndTimer);
   levelEndTimer = 0;
   stopFlashSession();
+  stopTargetSpeech();
 
   selectedUnitKey = unitKey;
 
@@ -742,7 +884,7 @@ function loadReviewLevel(preferredWords) {
     return false;
   }
 
-  words = words.slice(0, CONFIG.MAX_BRICKS);
+  words = words.slice(0, getMaxBricks());
 
   currentUnitKey = REVIEW_UNIT_KEY;
   reviewLevelWords = words.slice();
@@ -765,6 +907,7 @@ function startReviewLevel(preferredWords) {
   clearTimeout(levelEndTimer);
   levelEndTimer = 0;
   stopFlashSession();
+  stopTargetSpeech();
 
   if (!loadReviewLevel(preferredWords)) {
     showStartScreen();
@@ -1001,6 +1144,9 @@ function beginGameplay() {
   ensureTargetReachable();
   updateHud();
 
+  // 模式 B：开局先把顶部目标单词读一遍
+  speakTargetWord(CONFIG.TARGET_SPEAK_START_DELAY_MS);
+
   lastTime = performance.now();
 }
 
@@ -1073,6 +1219,7 @@ function showStartScreen() {
   clearTimeout(levelEndTimer);
   levelEndTimer = 0;
   stopFlashSession();
+  stopTargetSpeech();
 
   uiMode = 'start';
   levelActive = false;
@@ -1082,6 +1229,8 @@ function showStartScreen() {
   startScreen.classList.remove('hidden');
 
   refreshUnitSelectionUI();
+  refreshModeUI();
+  refreshDifficultyUI();
   refreshReviewEntry();
 
   // 从错词复习关回到首页时，把顶栏和标签页标题恢复成当前选中的 Unit
@@ -1348,7 +1497,7 @@ function handleWrongHit(brick) {
 
 /** 在砖块中心喷出彩色粒子；连击 ≥3 时粒子更多、更亮 */
 function spawnHitParticles(brick) {
-  const style = BRICK_STYLES[brick.pos] || BRICK_STYLES.other;
+  const style = getBrickStyle(brick);
   const centerX = brick.x + brick.width / 2;
   const centerY = brick.y + brick.height / 2;
   const isHotCombo = combo >= CONFIG.COMBO_SPEED_THRESHOLD;
@@ -1376,7 +1525,7 @@ function spawnHitParticles(brick) {
 
 /** 在砖块中心加一圈柔和扩散的光环 */
 function spawnHitRing(brick) {
-  const style = BRICK_STYLES[brick.pos] || BRICK_STYLES.other;
+  const style = getBrickStyle(brick);
   const isHotCombo = combo >= CONFIG.COMBO_SPEED_THRESHOLD;
 
   effects.push({
@@ -1397,7 +1546,7 @@ function spawnHitRing(brick) {
  * 做法：
  *   1. 把画布中“小球圆心可以出现的位置”按 8px 采样成网格；
  *   2. 每块活砖向外扩大一个球半径（12px）后标记为障碍。
- *      砖块之间只有 12px 缝隙，比小球直径 24px 窄，
+ *      砖块之间只有 10~14px 缝隙，比小球直径 24px 窄，
  *      扩大后这些缝隙会被完全封住，和真实碰撞一致；
  *   3. 从画布四边做洪水填充（小球可以沿墙自由移动）；
  *   4. 若某块砖附近存在可达的接触位置，这块砖就是能被打到的。
@@ -1496,7 +1645,7 @@ function getReachableBricks() {
 
   // 在砖块的四条边外侧各取一条很窄的“接触带”。
   // 只要任意一侧的接触带里存在可达位置，小球就能从这一侧打到它。
-  // 只认边中部的接触带，可以避免把斜对角的 12px 小缝误判成可达。
+  // 只认边中部的接触带，可以避免把斜对角的 10~14px 小缝误判成可达。
   const sideRange = step * 1.5;
 
   return activeBricks.filter((brick) => {
@@ -1563,6 +1712,47 @@ function pickNewTarget(candidates) {
 
   currentTargetBrick = next;
   targetChangedAt = performance.now();
+
+  // 模式 B 换目标后，稍等片刻再朗读新目标的英文单词
+  if (uiMode === 'game' && levelActive) {
+    speakTargetWord(CONFIG.TARGET_SPEAK_DELAY_MS);
+  }
+}
+
+/**
+ * 模式 B：朗读当前目标砖块的英文单词。
+ * 延迟执行可以避免和击中音效、上一个单词的朗读互相打断。
+ */
+function speakTargetWord(delay) {
+  clearTimeout(targetSpeechTimer);
+  targetSpeechTimer = 0;
+
+  if (selectedMode !== 'B' || !currentTargetBrick) return;
+  if (uiMode !== 'game' || !levelActive) return;
+  if (!window.GameAudio) return;
+
+  const word = currentTargetBrick.word;
+
+  targetSpeechTimer = window.setTimeout(() => {
+    targetSpeechTimer = 0;
+
+    if (
+      selectedMode === 'B' &&
+      uiMode === 'game' &&
+      levelActive &&
+      currentTargetBrick &&
+      currentTargetBrick.alive &&
+      currentTargetBrick.word === word
+    ) {
+      GameAudio.speakWord(word);
+    }
+  }, delay);
+}
+
+/** 停止尚未执行的“朗读目标”计时器 */
+function stopTargetSpeech() {
+  clearTimeout(targetSpeechTimer);
+  targetSpeechTimer = 0;
 }
 
 /**
@@ -1771,7 +1961,8 @@ function drawBackground(time) {
 }
 
 /**
- * 画布顶部的目标卡片：显示目标单词的中文释义 + emoji。
+ * 画布顶部的目标卡片：
+ * 模式 A 显示中文释义 + emoji，模式 B 显示英文单词 + emoji。
  * 卡片只在场上有目标时绘制，切换目标时会轻轻弹一下。
  */
 function drawTargetCard() {
@@ -1786,6 +1977,8 @@ function drawTargetCard() {
   const x = (world.width - cardWidth) / 2;
   const y = 12;
   const hasEmoji = !!currentTargetBrick.emoji;
+  const isModeB = selectedMode === 'B';
+  const modeConfig = GAME_MODES[selectedMode] || GAME_MODES.A;
 
   // 新目标出现时轻微放大，频率很低，不刺眼
   const sinceChange = performance.now() - targetChangedAt;
@@ -1841,7 +2034,7 @@ function drawTargetCard() {
   ctx.textAlign = 'left';
   ctx.font = `700 ${isPortrait ? 14 : 13}px ${UI_FONT_FAMILY}`;
   ctx.fillStyle = '#6a8aa3';
-  ctx.fillText('找出这个意思的单词', textLeft, y + cardHeight * 0.32);
+  ctx.fillText(modeConfig.targetHint, textLeft, y + cardHeight * 0.32);
 
   // 右侧剩余砖块数
   const remaining = bricks.filter((brick) => brick.alive).length;
@@ -1850,19 +2043,24 @@ function drawTargetCard() {
   ctx.fillStyle = '#93a9ba';
   ctx.fillText(`剩余 ${remaining} 块`, x + cardWidth - 20, y + cardHeight * 0.32);
 
-  // 中文释义（太长时自动缩小）
-  const meaning = currentTargetBrick.zh || '';
-  const meaningFontSize = fitTextFontSize(
-    meaning,
+  // 模式 A 显示中文释义，模式 B 显示英文单词（太长时自动缩小）
+  const promptText = isModeB
+    ? currentTargetBrick.word || ''
+    : currentTargetBrick.zh || '';
+  const promptFontFamily = isModeB ? BRICK_FONT_FAMILY : UI_FONT_FAMILY;
+  const promptFontSize = fitTextFontSize(
+    promptText,
     maxTextWidth,
     isPortrait ? 26 : 22,
-    14
+    12,
+    promptFontFamily,
+    800
   );
 
   ctx.textAlign = 'left';
-  ctx.font = `800 ${meaningFontSize}px ${UI_FONT_FAMILY}`;
+  ctx.font = `800 ${promptFontSize}px ${promptFontFamily}`;
   ctx.fillStyle = '#123a5c';
-  ctx.fillText(meaning, textLeft, y + cardHeight * 0.68);
+  ctx.fillText(promptText, textLeft, y + cardHeight * 0.68);
 
   // 金色描边
   ctx.strokeStyle = '#ffd166';
@@ -1874,11 +2072,20 @@ function drawTargetCard() {
 }
 
 /** 在限定宽度内找到能放下的最大字号 */
-function fitTextFontSize(text, maxWidth, startSize, minSize) {
+function fitTextFontSize(
+  text,
+  maxWidth,
+  startSize,
+  minSize,
+  fontFamily,
+  fontWeight
+) {
   let size = startSize;
+  const family = fontFamily || UI_FONT_FAMILY;
+  const weight = fontWeight || 800;
 
   while (size > minSize) {
-    measureCtx.font = `800 ${size}px ${UI_FONT_FAMILY}`;
+    measureCtx.font = `${weight} ${size}px ${family}`;
     if (measureCtx.measureText(text).width <= maxWidth) break;
     size -= 1;
   }
@@ -1890,7 +2097,7 @@ function drawBricks() {
   bricks.forEach((brick) => {
     if (!brick.alive) return;
 
-    const style = BRICK_STYLES[brick.pos] || BRICK_STYLES.other;
+    const style = getBrickStyle(brick);
     const radius = Math.min(14, brick.height * 0.28);
 
     // 底部阴影，让砖块有一点厚度
@@ -1952,9 +2159,9 @@ function getWrongFlashAlpha(brick) {
   return Math.sin(progress * Math.PI) * 0.45;
 }
 
-/** 在砖块中央绘制英文单词（支持一到两行） */
+/** 在砖块中央绘制当前模式的文字（英文或中文，支持一到三行） */
 function drawBrickText(brick, style) {
-  const lines = brick.textLines || [brick.word || ''];
+  const lines = brick.textLines || [getBrickDisplayText(brick)];
   const fontSize = brick.textFontSize || 16;
   const lineHeight = brick.textLineHeight || fontSize * 1.08;
   const centerX = brick.x + brick.width / 2;
@@ -1962,7 +2169,9 @@ function drawBrickText(brick, style) {
   const firstLineY = centerY - ((lines.length - 1) * lineHeight) / 2;
 
   ctx.save();
-  ctx.font = `700 ${fontSize}px ${BRICK_FONT_FAMILY}`;
+  ctx.font = `700 ${fontSize}px ${
+    brick.textFontFamily || getBrickFontFamily()
+  }`;
   ctx.fillStyle = style.text;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -2287,6 +2496,24 @@ window.addEventListener('keyup', (event) => {
 
 /* ---------------- 开始页 / 闪卡 / 结算页按钮 ---------------- */
 
+modeOptions.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-mode]');
+  if (!button) return;
+
+  if (window.GameAudio) {
+    GameAudio.unlock();
+  }
+
+  selectMode(button.dataset.mode);
+});
+
+difficultyOptions.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-difficulty]');
+  if (!button) return;
+
+  selectDifficulty(button.dataset.difficulty);
+});
+
 startBtn.addEventListener('click', () => {
   if (window.GameAudio) {
     GameAudio.unlock();
@@ -2393,6 +2620,8 @@ function clamp(value, min, max) {
 function init() {
   buildUnitGrid();
   refreshUnitSelectionUI();
+  refreshModeUI();
+  refreshDifficultyUI();
   refreshReviewEntry();
   fitCanvas();
 

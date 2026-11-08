@@ -58,10 +58,54 @@
       <div class="start-hero">
         <div class="start-icon" aria-hidden="true">🧱</div>
         <h2 class="start-title" id="startTitle">小又的打砖块</h2>
-        <p class="start-subtitle">先选一个 Unit，用小球击中正确的单词砖！</p>
+        <p class="start-subtitle">先选 Unit、出题模式和难度，用小球击中正确的砖块！</p>
       </div>
 
       <div class="unit-grid" id="unitGrid" role="group" aria-label="选择 Unit"></div>
+
+      <div class="setup-panel">
+        <div class="setup-group">
+          <div class="setup-head">
+            <span class="setup-label" id="modeLabel">出题模式</span>
+            <span class="setup-hint">默认：中文找英文</span>
+          </div>
+          <div class="option-row option-row-mode" id="modeOptions" role="radiogroup" aria-labelledby="modeLabel">
+            <button class="option-btn is-selected" type="button" data-mode="A" role="radio" aria-checked="true">
+              <span class="option-title">中文找英文</span>
+              <span class="option-desc">看中文提示 · 打英文砖</span>
+            </button>
+            <button class="option-btn" type="button" data-mode="B" role="radio" aria-checked="false">
+              <span class="option-title">英文找中文</span>
+              <span class="option-desc">听读英文 · 打中文砖</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="setup-group">
+          <div class="setup-head">
+            <span class="setup-label" id="difficultyLabel">游戏难度</span>
+            <span class="setup-hint">每排 4 块砖</span>
+          </div>
+          <div class="option-row option-row-difficulty" id="difficultyOptions" role="radiogroup" aria-labelledby="difficultyLabel">
+            <button class="option-btn" type="button" data-difficulty="easy" role="radio" aria-checked="false">
+              <span class="option-title">简单</span>
+              <span class="option-desc">1 排 · 4 词</span>
+            </button>
+            <button class="option-btn is-selected" type="button" data-difficulty="normal" role="radio" aria-checked="true">
+              <span class="option-title">普通</span>
+              <span class="option-desc">2 排 · 8 词</span>
+            </button>
+            <button class="option-btn" type="button" data-difficulty="hard" role="radio" aria-checked="false">
+              <span class="option-title">困难</span>
+              <span class="option-desc">3 排 · 12 词</span>
+            </button>
+            <button class="option-btn" type="button" data-difficulty="hell" role="radio" aria-checked="false">
+              <span class="option-title">地狱</span>
+              <span class="option-desc">4 排 · 16 词</span>
+            </button>
+          </div>
+        </div>
+      </div>
 
       <label class="slow-toggle" for="slowModeToggle">
         <span class="slow-copy">
@@ -82,7 +126,7 @@
       </button>
       <p class="review-note" id="reviewNote" role="status"></p>
 
-      <p class="start-tip">提示：先看顶部的中文目标，再击中对应的英文单词砖。</p>
+      <p class="start-tip" id="startTip">提示：看顶部的中文目标，击中对应的英文单词砖。</p>
     </div>
   </div>
 
