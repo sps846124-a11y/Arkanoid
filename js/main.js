@@ -15,6 +15,7 @@
      · 连击计数、连击加分、连击 ≥3 时小球加速
      · 击中砖块的粒子与柔和光圈反馈
      · 目标死局检测：自动改选能被小球打到的外层砖块
+     · 移动端窄屏优化：砖块群左右自动留出通道，顶层目标有轻微侧边吸附
 
    本版新增：
      · 出题模式 A：看中文 + emoji，打英文单词砖（按词性配色）
@@ -40,6 +41,13 @@ const CONFIG = {
   SLOW_MODE_FACTOR: 0.7,        // 慢速模式速度倍率（约降低 30%）
   BALL_RADIUS: 12,              // 小球半径（逻辑像素）
   BALL_SPEED: 430,              // 小球速度（逻辑像素 / 秒），越大越快
+  // 砖块群左右两侧至少留出的通道宽度（按小球直径计）。
+  // 窄屏上如果通道太窄，小球很难从侧面绕到顶层砖块上方，1.5 是下限，2 更好打。
+  SIDE_CORRIDOR_BALL_DIAMETERS: 2,
+  // 侧边吸附：目标在顶层、小球贴墙向上飞行时，轻微向砖块区内侧引导。
+  SIDE_ASSIST_RANGE_BALL_DIAMETERS: 1.8, // 球心距侧墙小于该值才触发
+  SIDE_ASSIST_ACCEL: 260,       // 向内引导的横向加速度（逻辑像素 / 秒²）
+  SIDE_ASSIST_MAX_VX_RATIO: 0.55, // 引导后横向速度最多占球速的比例
   PADDLE_HEIGHT: 20,            // 滑块高度
   PADDLE_KEYBOARD_SPEED: 760,   // 键盘移动滑块速度
   PADDLE_HIT_PAD: 18,           // 滑块左右额外判定宽度（儿童友好）
@@ -369,10 +377,23 @@ function layoutPaddle() {
   paddle.y = world.height - (world.isPortrait ? 104 : 58);
 }
 
+/**
+ * 砖块群左右两侧的留白。
+ * 窄屏（竖屏）至少要留出 CONFIG.SIDE_CORRIDOR_BALL_DIAMETERS 个小球直径，
+ * 否则小球几乎没有空间从墙边绕到顶层砖块上方。
+ */
+function getBrickSideMargin() {
+  const baseMargin = world.isPortrait ? 26 : 70;
+  const minCorridor =
+    CONFIG.BALL_RADIUS * 2 * CONFIG.SIDE_CORRIDOR_BALL_DIAMETERS;
+
+  return Math.max(baseMargin, minCorridor);
+}
+
 /** 按当前横竖屏重新排列砖块网格（每排最多 4 块，不足一整行时居中） */
 function layoutBricks() {
   const cols = CONFIG.BRICKS_PER_ROW;
-  const sideMargin = world.isPortrait ? 26 : 70;
+  const sideMargin = getBrickSideMargin();
   const gap = world.isPortrait ? 10 : 14;
   // 顶部要留出目标卡片的位置
   const top = world.isPortrait ? 108 : 96;
@@ -1125,10 +1146,67 @@ function updatePaddle(dt) {
 }
 
 /**
+ * 侧边吸附（移动端辅助）：
+ * 当目标砖位于最顶层、小球贴着左右墙向上飞行，且已经升到顶层砖上方时，
+ * 给小球一个很轻的向内横向加速度，帮助它从墙边拐进砖块区，
+ * 避免小球在狭窄的侧边通道里一直上下弹跳、打不到顶层目标。
+ *
+ * 只改变速度方向，不改变速度大小；并且限制横向速度占比，
+ * 所以手感仍然是正常的反弹，不会出现明显的“拐弯”。
+ */
+function applySideAssist(dt) {
+  if (gameState !== 'playing' || !levelActive) return;
+  if (!currentTargetBrick || !currentTargetBrick.alive) return;
+  if (ball.vy >= 0) return;
+
+  // 找到当前最顶层砖块的 y，目标必须就在这一层
+  let topY = Infinity;
+  bricks.forEach((brick) => {
+    if (brick.alive && brick.y < topY) topY = brick.y;
+  });
+
+  if (!Number.isFinite(topY)) return;
+  if (Math.abs(currentTargetBrick.y - topY) > 0.5) return;
+
+  // 小球要已经升到顶层砖块上方，才需要往砖块区里拐
+  if (ball.y >= topY) return;
+
+  const speed = Math.hypot(ball.vx, ball.vy);
+  if (speed < 1) return;
+
+  const range =
+    CONFIG.BALL_RADIUS * 2 * CONFIG.SIDE_ASSIST_RANGE_BALL_DIAMETERS;
+  let inward = 0;
+
+  if (ball.x < range) {
+    inward = 1;
+  } else if (ball.x > world.width - range) {
+    inward = -1;
+  }
+
+  if (inward === 0) return;
+
+  const maxVx = speed * CONFIG.SIDE_ASSIST_MAX_VX_RATIO;
+  if (inward * ball.vx >= maxVx) return; // 已经明显向内飞，不再干预
+
+  ball.vx += inward * CONFIG.SIDE_ASSIST_ACCEL * dt;
+  ball.vx =
+    inward > 0
+      ? Math.min(ball.vx, maxVx)
+      : Math.max(ball.vx, -maxVx);
+
+  // 保持球速大小不变，只把多余/不足的速度分给竖直方向
+  const newVy = Math.sqrt(Math.max(0, speed * speed - ball.vx * ball.vx));
+  ball.vy = -newVy;
+}
+
+/**
  * 更新小球位置。
  * 把一帧的移动拆成几个小步，避免高速穿透砖块。
  */
 function updateBall(dt) {
+  applySideAssist(dt);
+
   const speed = Math.hypot(ball.vx, ball.vy);
   const distance = speed * dt;
   const maxStep = Math.max(4, ball.radius * 0.6);
