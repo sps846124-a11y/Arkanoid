@@ -15,7 +15,8 @@
      · 连击计数、连击加分、连击 ≥3 时小球加速
      · 击中砖块的粒子与柔和光圈反馈
      · 目标死局检测：自动改选能被小球打到的外层砖块
-     · 移动端窄屏优化：砖块群左右自动留出通道，顶层目标有轻微侧边吸附
+     · 移动端窄屏优化：砖块群最多占画布 80%（两侧各留 10% 通道），
+       顶层目标有轻微侧边吸附
 
    本版新增：
      · 出题模式 A：看中文 + emoji，打英文单词砖（按词性配色）
@@ -41,6 +42,9 @@ const CONFIG = {
   SLOW_MODE_FACTOR: 0.7,        // 慢速模式速度倍率（约降低 30%）
   BALL_RADIUS: 12,              // 小球半径（逻辑像素）
   BALL_SPEED: 430,              // 小球速度（逻辑像素 / 秒），越大越快
+  // 砖块群总宽度最多占画布宽度的比例；剩余部分平均分给左右两侧，
+  // 因此两侧各至少留出 10% 画布宽度作为小球的穿行通道。
+  BRICK_GROUP_MAX_WIDTH_RATIO: 0.8,
   // 砖块群左右两侧至少留出的通道宽度（按小球直径计）。
   // 窄屏上如果通道太窄，小球很难从侧面绕到顶层砖块上方，1.5 是下限，2 更好打。
   SIDE_CORRIDOR_BALL_DIAMETERS: 2,
@@ -377,30 +381,45 @@ function layoutPaddle() {
   paddle.y = world.height - (world.isPortrait ? 104 : 58);
 }
 
+/** 当前画布是否为竖屏（高度 > 宽度） */
+function isPortraitCanvas() {
+  return world.height > world.width;
+}
+
 /**
  * 砖块群左右两侧的留白。
- * 窄屏（竖屏）至少要留出 CONFIG.SIDE_CORRIDOR_BALL_DIAMETERS 个小球直径，
- * 否则小球几乎没有空间从墙边绕到顶层砖块上方。
+ *   1. 砖块群总宽度最多占画布宽度的 BRICK_GROUP_MAX_WIDTH_RATIO（默认 80%），
+ *      因此两侧各至少留出 10% 画布宽度作为小球的穿行通道；
+ *   2. 同时保证通道不小于若干个小球直径，避免窄屏上小球无法绕到顶层。
  */
-function getBrickSideMargin() {
-  const baseMargin = world.isPortrait ? 26 : 70;
+function getBrickSideMargin(isPortrait) {
+  const baseMargin = isPortrait ? 26 : 70;
   const minCorridor =
     CONFIG.BALL_RADIUS * 2 * CONFIG.SIDE_CORRIDOR_BALL_DIAMETERS;
+  const ratioMargin =
+    (world.width * (1 - CONFIG.BRICK_GROUP_MAX_WIDTH_RATIO)) / 2;
 
-  return Math.max(baseMargin, minCorridor);
+  return Math.max(baseMargin, minCorridor, ratioMargin);
 }
 
 /** 按当前横竖屏重新排列砖块网格（每排最多 4 块，不足一整行时居中） */
 function layoutBricks() {
   const cols = CONFIG.BRICKS_PER_ROW;
-  const sideMargin = getBrickSideMargin();
-  const gap = world.isPortrait ? 10 : 14;
+  const isPortrait = isPortraitCanvas();
+  const sideMargin = getBrickSideMargin(isPortrait);
+  const gap = isPortrait ? 10 : 14;
   // 顶部要留出目标卡片的位置
-  const top = world.isPortrait ? 108 : 96;
-  const brickHeight = world.isPortrait ? 66 : 64;
-  const rowGap = world.isPortrait ? 10 : 12;
-  const brickWidth =
-    (world.width - sideMargin * 2 - gap * (cols - 1)) / cols;
+  const top = isPortrait ? 108 : 96;
+  const brickHeight = isPortrait ? 66 : 64;
+  const rowGap = isPortrait ? 10 : 12;
+
+  // 砖块群总宽度的硬上限：画布宽度的 80%
+  const maxGroupWidth = world.width * CONFIG.BRICK_GROUP_MAX_WIDTH_RATIO;
+  const groupWidth = Math.min(
+    world.width - sideMargin * 2,
+    maxGroupWidth
+  );
+  const brickWidth = (groupWidth - gap * (cols - 1)) / cols;
 
   bricks.forEach((brick) => {
     const col = brick.index % cols;
