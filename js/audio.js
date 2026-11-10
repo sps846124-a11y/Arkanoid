@@ -2,8 +2,8 @@
    音效与发音模块
    ---------------------------------------------------------
    · 所有音效都用 Web Audio API 现场合成，不加载任何音频文件
-   · 英文单词用浏览器 speechSynthesis 朗读，优先选择英文语音
-   · 浏览器不支持或语音服务不可用时静默跳过，不影响游戏
+   · 英文单词优先使用有道词典的真人发音（在线，美音）
+   · 仅在在线音频加载失败或播放被拒绝时，才用 speechSynthesis 兜底
    ========================================================= */
 
 window.GameAudio = (function () {
@@ -36,6 +36,7 @@ window.GameAudio = (function () {
   /** 在第一次点击或按键时调用，解锁浏览器音频权限 */
   function unlock() {
     getAudioContext();
+    primePronunciationAudio();
   }
 
   /**
@@ -93,7 +94,98 @@ window.GameAudio = (function () {
     playTone(1046.5, 0.2, 0.45, 'triangle', 0.05);
   }
 
-  /* ---------------- 单词发音 ---------------- */
+  /* ---------------- 单词发音（有道真人发音） ---------------- */
+
+  // 有道词典发音接口：type=2 美音，type=1 英音
+  const YOUDAO_AUDIO_URL = 'https://dict.youdao.com/dictvoice';
+  const YOUDAO_ACCENT_TYPE = 2;
+
+  // 网络差或音频长时间无法开始播放时，多久后改用系统语音兜底
+  const FALLBACK_DELAY_MS = 2500;
+
+  // 一段极短的静音 WAV，用于在用户手势里解锁移动端音频播放权限
+  const SILENT_AUDIO_SRC =
+    'data:audio/wav;base64,UklGRjQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YRAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
+  let pronunciationAudio = null;
+  let audioPrimed = false;
+  let currentAudio = null;
+  let speakRequestId = 0;
+  let activePronunciationCleanup = null;
+
+  /**
+   * 复用一个 Audio 对象：iOS Safari 要求音频元素在用户手势中播放过，
+   * 之后才允许程序自动播放；每次 new Audio() 可能被拦截。
+   */
+  function getPronunciationAudio() {
+    if (pronunciationAudio) return pronunciationAudio;
+    if (typeof Audio !== 'function') return null;
+
+    try {
+      pronunciationAudio = new Audio();
+      pronunciationAudio.preload = 'auto';
+    } catch (error) {
+      pronunciationAudio = null;
+    }
+
+    return pronunciationAudio;
+  }
+
+  /** 在首次点击/按键时播放静音片段，解锁移动端音频 */
+  function primePronunciationAudio() {
+    if (audioPrimed) return;
+
+    const audio = getPronunciationAudio();
+    if (!audio) return;
+
+    // 正在朗读单词时不要用静音片段打断它
+    if (currentAudio === audio && !audio.paused) return;
+
+    audioPrimed = true;
+
+    try {
+      audio.src = SILENT_AUDIO_SRC;
+      const playResult = audio.play();
+      if (playResult && typeof playResult.catch === 'function') {
+        playResult.catch((error) => {
+          // 只有被自动播放策略拦截时才允许下次手势重试；
+          // 因切换 src 产生的 AbortError 不应重复解锁。
+          if (error && error.name === 'NotAllowedError') {
+            audioPrimed = false;
+          }
+        });
+      }
+    } catch (error) {
+      audioPrimed = false;
+    }
+  }
+
+  /** 拼接有道发音地址；单词可能含空格、连字符，必须编码 */
+  function buildPronunciationUrl(word) {
+    return (
+      YOUDAO_AUDIO_URL +
+      '?audio=' +
+      encodeURIComponent(word) +
+      '&type=' +
+      YOUDAO_ACCENT_TYPE
+    );
+  }
+
+  /** 暂停并重置当前正在播放的音频，避免连续发音重叠 */
+  function stopCurrentAudio() {
+    const audio = currentAudio;
+    currentAudio = null;
+    if (!audio) return;
+
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+    } catch (error) {
+      // 音频尚未加载完成时忽略
+    }
+  }
+
+  /* -------- 系统语音：仅作为真人音频失败时的兜底 -------- */
 
   function refreshVoices() {
     if (!window.speechSynthesis) return;
@@ -129,12 +221,9 @@ window.GameAudio = (function () {
     );
   }
 
-  /**
-   * 用浏览器语音朗读英文单词（语速稍慢，适合儿童跟读）
-   * 不支持 speechSynthesis 时静默返回。
-   */
-  function speakWord(word) {
-    if (!word || !window.speechSynthesis) return;
+  /** 用浏览器系统语音朗读（真人音频失败时的兜底，语速稍慢） */
+  function speakWithBrowserVoice(word) {
+    if (!window.speechSynthesis) return;
     if (typeof window.SpeechSynthesisUtterance !== 'function') return;
 
     try {
@@ -149,16 +238,99 @@ window.GameAudio = (function () {
         if (voice.lang) utterance.lang = voice.lang;
       }
 
-      // 取消上一条，避免连击时单词排队念不完
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
     } catch (error) {
-      // 浏览器不支持或语音服务不可用时静默兜底
+      // 系统语音也不可用时静默跳过，不影响游戏
+    }
+  }
+
+  /**
+   * 播放单词真人发音（有道美音）。
+   * 播放前会暂停并重置上一条音频，避免连击时多个声音叠在一起；
+   * 仅在加载失败、播放被拒绝或超时未开始时，才用系统语音兜底。
+   */
+  function speakWord(word) {
+    if (!word) return;
+
+    // 让上一条音频的异步回调全部失效，并停掉正在播放的声音
+    stopSpeaking();
+    const requestId = ++speakRequestId;
+
+    const audio = getPronunciationAudio();
+    if (!audio) {
+      speakWithBrowserVoice(word);
+      return;
+    }
+
+    audio.src = buildPronunciationUrl(word);
+    currentAudio = audio;
+
+    let settled = false;
+    let fallbackTimer = 0;
+
+    function cleanup() {
+      window.clearTimeout(fallbackTimer);
+      audio.removeEventListener('playing', handlePlaying);
+      audio.removeEventListener('error', handleFailure);
+      if (activePronunciationCleanup === cleanup) {
+        activePronunciationCleanup = null;
+      }
+    }
+
+    function fallbackToBrowserVoice() {
+      if (settled || requestId !== speakRequestId) return;
+      settled = true;
+      cleanup();
+
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+      } catch (error) {
+        // 忽略重置资源时的异常
+      }
+
+      if (currentAudio === audio) currentAudio = null;
+      speakWithBrowserVoice(word);
+    }
+
+    function handlePlaying() {
+      if (requestId !== speakRequestId) return;
+      settled = true;
+      cleanup();
+    }
+
+    function handleFailure() {
+      fallbackToBrowserVoice();
+    }
+
+    audio.addEventListener('playing', handlePlaying);
+    audio.addEventListener('error', handleFailure);
+    activePronunciationCleanup = cleanup;
+
+    // 网络差、音频迟迟不开始时兜底
+    fallbackTimer = window.setTimeout(
+      fallbackToBrowserVoice,
+      FALLBACK_DELAY_MS
+    );
+
+    const playResult = audio.play();
+    if (playResult && typeof playResult.catch === 'function') {
+      // 浏览器拒绝播放（如自动播放策略）时立即兜底
+      playResult.catch(() => fallbackToBrowserVoice());
     }
   }
 
   /** 停止正在朗读的单词（切换关卡、关闭闪卡时调用） */
   function stopSpeaking() {
+    speakRequestId += 1;
+
+    if (activePronunciationCleanup) {
+      activePronunciationCleanup();
+    }
+
+    stopCurrentAudio();
+
     if (!window.speechSynthesis) return;
 
     try {
