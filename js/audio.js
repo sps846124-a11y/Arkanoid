@@ -94,6 +94,13 @@ window.GameAudio = (function () {
     playTone(1046.5, 0.2, 0.45, 'triangle', 0.05);
   }
 
+  /** 连击分裂：清脆的高音上行提示 */
+  function playSplit() {
+    playTone(1046.5, 0, 0.09, 'triangle', 0.06);    // C6
+    playTone(1318.5, 0.05, 0.1, 'triangle', 0.055); // E6
+    playTone(1568.0, 0.1, 0.13, 'sine', 0.05);      // G6
+  }
+
   /* ---------------- 单词发音（有道真人发音） ---------------- */
 
   // 有道词典发音接口：type=2 美音，type=1 英音
@@ -345,6 +352,7 @@ window.GameAudio = (function () {
     playCorrect,
     playWrong,
     playPass,
+    playSplit,
     speakWord,
     stopSpeaking
   };

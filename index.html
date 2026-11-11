@@ -6,7 +6,7 @@
     name="viewport"
     content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
   />
-  <title>小又的打砖块游戏</title>
+  <title>大姑娘爱学习</title>
   <meta name="theme-color" content="#51acef" />
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -20,7 +20,7 @@
       <div class="brand">
         <span class="brand-icon" aria-hidden="true">🧱</span>
         <div class="brand-text">
-          <h1>小又的打砖块</h1>
+          <h1>大姑娘爱学习</h1>
           <p class="brand-sub" id="unitLabel">Unit 1 · 运动与时间</p>
         </div>
       </div>
@@ -43,13 +43,6 @@
         <canvas id="gameCanvas" aria-label="打砖块游戏区域"></canvas>
       </div>
     </main>
-
-    <!-- 操作提示 -->
-    <footer class="hint-bar">
-      <span>👆 左右拖动滑块</span>
-      <span>点击 / 轻触发球</span>
-      <span class="hint-keyboard">← → 移动 · 空格发球</span>
-    </footer>
   </div>
 
   <!-- 开始页 -->
@@ -57,7 +50,7 @@
     <div class="screen-card start-card">
       <div class="start-hero">
         <div class="start-icon" aria-hidden="true">🧱</div>
-        <h2 class="start-title" id="startTitle">小又的打砖块</h2>
+        <h2 class="start-title" id="startTitle">大姑娘爱学习</h2>
         <p class="start-subtitle">先选 Unit、出题模式和难度，用小球击中正确的砖块！</p>
       </div>
 
@@ -107,17 +100,6 @@
         </div>
       </div>
 
-      <label class="slow-toggle" for="slowModeToggle">
-        <span class="slow-copy">
-          <strong>慢速模式</strong>
-          <small>小球速度降低 30%，适合低龄</small>
-        </span>
-        <input type="checkbox" id="slowModeToggle" />
-        <span class="switch-track" aria-hidden="true">
-          <span class="switch-thumb"></span>
-        </span>
-      </label>
-
       <button class="btn btn-primary btn-large" id="startBtn" type="button">开始游戏</button>
 
       <p class="start-tip" id="startTip">提示：看顶部的中文目标，击中对应的英文单词砖。</p>
@@ -130,9 +112,9 @@
       <div class="flash-header">
         <div>
           <h2 class="flash-title" id="flashTitle">预习时间</h2>
-          <p class="flash-subtitle" id="flashSubtitle">先看看这些单词，8 秒后开始游戏</p>
+          <p class="flash-subtitle" id="flashSubtitle">先看看这些单词，准备开始游戏</p>
         </div>
-        <div class="flash-timer" id="flashTimer" aria-label="剩余秒数">8</div>
+        <div class="flash-timer" id="flashTimer" aria-label="剩余秒数">3</div>
       </div>
 
       <div class="flash-grid" id="flashGrid"></div>

@@ -1,6 +1,6 @@
 {
-  "name": "小又的打砖块游戏",
-  "short_name": "小又打砖块",
+  "name": "大姑娘爱学习",
+  "short_name": "大姑娘爱学习",
   "description": "给 6–9 岁孩子的英语单词打砖块小游戏",
   "lang": "zh-CN",
   "dir": "ltr",
@@ -34,7 +34,7 @@
       "sizes": "1280x720",
       "type": "image/png",
       "form_factor": "wide",
-      "label": "小又的打砖块游戏画面"
+      "label": "大姑娘爱学习游戏画面"
     },
     {
       "src": "screenshot-narrow.png",

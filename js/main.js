@@ -1,7 +1,7 @@
 'use strict';
 
 /* =========================================================
-   小又的打砖块游戏 —— 双向学习 + 难度选择版本
+   大姑娘爱学习 —— 双向学习 + 难度选择版本
    ---------------------------------------------------------
    基础玩法：
      · 滑块拖动（鼠标 / 触屏 / 键盘）
@@ -9,8 +9,8 @@
      · 生命、得分、横竖屏自适应
      · 六个 Unit 的教材词库与单词砖块
      · 目标卡片、正确消除 / 错误闪烁、单词朗读、合成音效
-     · 开始页 + Unit 选择 + 慢速模式
-     · 8 秒预习闪卡、过关复习闪卡
+     · 开始页 + Unit 选择 + 出题模式 + 难度选择
+     · 预习闪卡时长随单词数量动态增长、过关复习闪卡
      · 总结算页（得分、正确率），支持下一关 / 重玩 / 回首页
      · 连击计数、连击加分、连击 ≥3 时小球加速
      · 击中砖块的粒子与柔和光圈反馈
@@ -19,10 +19,10 @@
        顶层目标有轻微侧边吸附
 
    本版新增：
-     · 出题模式 A：看中文 + emoji，打英文单词砖（按词性配色）
-     · 出题模式 B：看 / 听英文 + emoji，打中文砖（统一浅蓝色）
-     · 难度选择：简单 1 排、普通 2 排、困难 3 排、地狱 4 排，
-       每排最多 4 块砖；开局从本关词库随机抽词
+     · 连击分裂：连击数到达 2、4、6… 时原地生成分身球，
+       场上最多 3 个球，分身球 5 秒后消失
+     · 死循环兜底：15 秒没碰到滑块、或同一区域连续碰撞 5 次，
+       小球自动回到滑块上方并恢复待发射状态
    ========================================================= */
 
 /* =========================================================
@@ -37,11 +37,17 @@ const CONFIG = {
   COMBO_SPEED_BONUS: 0.1,       // 加速幅度：约提升 10%
   WRONG_FLASH_MS: 320,          // 击错砖时红色提示的时长（毫秒）
   BRICKS_PER_ROW: 4,            // 每排固定 4 块砖，难度决定排数（1~4 排）
-  PREVIEW_SECONDS: 8,           // 每关开始前的预习总时长（秒）
+  PREVIEW_BASE_SECONDS: 3,      // 预习基础时长（秒）
+  PREVIEW_SECONDS_PER_WORD: 1.5, // 每个单词额外增加的预习时间（秒）
   REVIEW_STEP_MS: 1400,         // 过关复习闪卡每张停留时长（毫秒）
-  SLOW_MODE_FACTOR: 0.7,        // 慢速模式速度倍率（约降低 30%）
   BALL_RADIUS: 12,              // 小球半径（逻辑像素）
   BALL_SPEED: 430,              // 小球速度（逻辑像素 / 秒），越大越快
+  MAX_BALLS: 3,                 // 场上最多同时存在的小球数量（含主球）
+  COMBO_SPLIT_INTERVAL: 2,      // 连击数每达到该倍数就分裂一个分身球
+  CLONE_BALL_LIFETIME: 5,       // 分身球存活时长（秒）
+  LOOP_NO_PADDLE_SECONDS: 15,   // 连续这么久没碰到滑块就重置小球
+  LOOP_COLLISION_LIMIT: 5,      // 同一区域连续碰撞次数上限
+  LOOP_REGION_RADIUS: 90,       // 判定“同一区域”的半径（逻辑像素）
   // 砖块群总宽度最多占画布宽度的比例；剩余部分平均分给左右两侧，
   // 因此两侧各至少留出 10% 画布宽度作为小球的穿行通道。
   BRICK_GROUP_MAX_WIDTH_RATIO: 0.8,
@@ -61,6 +67,9 @@ const CONFIG = {
   PARTICLE_COUNT: 12,           // 每次击中目标砖喷出的粒子数量
   MAX_DPR: 2                    // 高分屏最多按 2 倍像素渲染，避免卡顿
 };
+
+// 游戏名称：首页、标签页标题统一使用
+const GAME_TITLE = '大姑娘爱学习';
 
 // 横屏、竖屏两套逻辑分辨率；画面会等比缩放填满可用区域
 const WORLD_LANDSCAPE = { width: 960, height: 640 };
@@ -102,7 +111,6 @@ const unitGrid = document.getElementById('unitGrid');
 const modeOptions = document.getElementById('modeOptions');
 const difficultyOptions = document.getElementById('difficultyOptions');
 const startTip = document.getElementById('startTip');
-const slowModeToggle = document.getElementById('slowModeToggle');
 const startBtn = document.getElementById('startBtn');
 
 const flashScreen = document.getElementById('flashScreen');
@@ -151,7 +159,6 @@ let currentTargetBrick = null;
 let targetChangedAt = 0;
 let targetSpeechTimer = 0;        // 模式 B 朗读目标的延时计时器
 
-let isSlowMode = false;
 let levelActive = false;          // 只有真正在玩时才允许发球
 let levelWords = [];              // 本关实际铺上砖块的单词（预习/复习用）
 let levelStats = { correct: 0, wrong: 0 }; // 本关击中统计（结算正确率）
@@ -174,14 +181,26 @@ const paddle = {
   height: CONFIG.PADDLE_HEIGHT
 };
 
-const ball = {
-  x: 0,
-  y: 0,
-  radius: CONFIG.BALL_RADIUS,
-  vx: 0,
-  vy: 0,
-  attached: true
-};
+/** 创建一个小球状态；isClone 为 true 时是连击分裂出的分身球 */
+function createBallState(isClone) {
+  return {
+    x: 0,
+    y: 0,
+    radius: CONFIG.BALL_RADIUS,
+    vx: 0,
+    vy: 0,
+    attached: !isClone,
+    isClone: !!isClone,
+    life: isClone ? CONFIG.CLONE_BALL_LIFETIME : 0,
+    noPaddleTime: 0,      // 连续多久没碰到滑块（死循环检测，秒）
+    loopAnchor: null,     // 最近一次碰撞的区域中心
+    loopCount: 0          // 同一区域连续碰撞次数
+  };
+}
+
+// 主球始终是 balls[0]；分身球临时加入数组，最多同时 3 个
+const ball = createBallState(false);
+const balls = [ball];
 
 // 砖块会随当前 Unit 在 rebuildBricks() 中重建
 const bricks = [];
@@ -302,7 +321,7 @@ function loadUnit(unitKey) {
 
   const title = unit.title || `Unit ${unit.unit}`;
   unitLabel.textContent = title;
-  document.title = `小又的打砖块 · ${title}`;
+  document.title = GAME_TITLE;
 
   levelWords = selectWordsForUnit(unit.words, getMaxBricks());
   levelStats = { correct: 0, wrong: 0 };
@@ -318,6 +337,9 @@ function loadUnit(unitKey) {
  * 并把画布缩放到尽可能大、同时保持比例。
  */
 function fitCanvas() {
+  // 横竖屏切换时分身球的位置和方向会失效，直接收回，避免异常弹射
+  clearCloneBalls();
+
   const stageRect = stage.getBoundingClientRect();
   const availableWidth = Math.max(280, stageRect.width);
   const availableHeight = Math.max(280, stageRect.height);
@@ -365,6 +387,11 @@ function fitCanvas() {
     ball.x = clamp(ballRatio.x * world.width, ball.radius, world.width - ball.radius);
     ball.y = clamp(ballRatio.y * world.height, ball.radius, world.height - ball.radius);
   }
+
+  // 尺寸变化后给小球一个全新的 15 秒窗口，避免马上触发死循环重置
+  ball.noPaddleTime = 0;
+  ball.loopAnchor = null;
+  ball.loopCount = 0;
 
   // 旋转屏幕后旧的指针位置不再有效
   pointerTargetX = null;
@@ -572,6 +599,7 @@ function resetGame() {
   comboChangedAt = 0;
   particles.length = 0;
   effects.length = 0;
+  clearCloneBalls();
 
   bricks.forEach((brick) => {
     brick.alive = true;
@@ -584,6 +612,9 @@ function resetGame() {
   ball.vx = 0;
   ball.vy = 0;
   ball.attached = true;
+  ball.noPaddleTime = 0;
+  ball.loopAnchor = null;
+  ball.loopCount = 0;
   attachBallToPaddle();
 
   updateHud();
@@ -603,28 +634,32 @@ function getComboSpeedMultiplier() {
 }
 
 /**
- * 当前应有的球速：基础速度 × 慢速模式系数 × 连击加速。
+ * 当前应有的球速：基础速度 × 连击加速。
  * 发球、接球、连击变化时都以这个值为准。
  */
 function getStartSpeed() {
-  const slowFactor = isSlowMode ? CONFIG.SLOW_MODE_FACTOR : 1;
-  return CONFIG.BALL_SPEED * slowFactor * getComboSpeedMultiplier();
+  return CONFIG.BALL_SPEED * getComboSpeedMultiplier();
 }
 
 /**
- * 连击数变化后，让正在飞行的小球立即匹配新的目标速度。
+ * 连击数变化后，让所有正在飞行的小球立即匹配新的目标速度。
  * 保持飞行方向不变，只调整速度大小。
  */
 function syncBallSpeedToCombo() {
   if (!levelActive) return;
 
-  const currentSpeed = Math.hypot(ball.vx, ball.vy);
-  if (currentSpeed < 0.001) return;
-
   const targetSpeed = getStartSpeed();
-  const factor = targetSpeed / currentSpeed;
-  ball.vx *= factor;
-  ball.vy *= factor;
+
+  balls.forEach((currentBall) => {
+    if (currentBall.attached) return;
+
+    const currentSpeed = Math.hypot(currentBall.vx, currentBall.vy);
+    if (currentSpeed < 0.001) return;
+
+    const factor = targetSpeed / currentSpeed;
+    currentBall.vx *= factor;
+    currentBall.vy *= factor;
+  });
 }
 
 /** 连击变化：更新计数和提示动画时间 */
@@ -632,6 +667,121 @@ function updateCombo(nextCombo) {
   combo = Math.max(0, nextCombo);
   comboChangedAt = performance.now();
   syncBallSpeedToCombo();
+}
+
+/* ---------------- 分裂球与死循环兜底 ---------------- */
+
+/** 清空所有分身球，只保留主球 */
+function clearCloneBalls() {
+  balls.length = 1;
+}
+
+/** 从数组中移除指定分身球（主球永远不会被移除） */
+function removeBall(target) {
+  if (target === ball) return;
+
+  const index = balls.indexOf(target);
+  if (index > 0) balls.splice(index, 1);
+}
+
+/**
+ * 连击分裂：在命中位置生成一个分身球。
+ * 场上最多 MAX_BALLS 个球；分身球速度与母球一致，方向水平镜像。
+ */
+function spawnCloneBall(sourceBall) {
+  if (gameState !== 'playing' || !levelActive) return;
+  if (balls.length >= CONFIG.MAX_BALLS) return;
+
+  const speed = Math.hypot(sourceBall.vx, sourceBall.vy) || getStartSpeed();
+  let vx = -sourceBall.vx;
+  let vy = sourceBall.vy;
+
+  if (Math.abs(vx) < speed * 0.25) {
+    // 母球几乎垂直飞行时，镜像没有意义，给分身一个明确的斜向速度
+    vx = (Math.random() < 0.5 ? -1 : 1) * speed * 0.55;
+    const vySign = vy > 0 ? 1 : -1;
+    vy = vySign * Math.sqrt(Math.max(0, speed * speed - vx * vx));
+  } else {
+    const scale = speed / Math.max(0.001, Math.hypot(vx, vy));
+    vx *= scale;
+    vy *= scale;
+  }
+
+  const clone = createBallState(true);
+  clone.x = sourceBall.x;
+  clone.y = sourceBall.y;
+  clone.vx = vx;
+  clone.vy = vy;
+  clone.noPaddleTime = 0;
+  balls.push(clone);
+
+  // 生成位置的一圈粉紫色光圈，视觉上更醒目
+  effects.push({
+    x: clone.x,
+    y: clone.y,
+    radius: 12,
+    startRadius: 12,
+    maxRadius: 64,
+    life: 0.36,
+    maxLife: 0.36,
+    color: '#d15be8'
+  });
+
+  if (window.GameAudio) {
+    GameAudio.playSplit();
+  }
+}
+
+/**
+ * 记录一次墙面 / 砖块碰撞。
+ * 如果连续多次碰撞都落在同一个小区域里，说明小球卡进了死循环。
+ * 返回 true 表示已经触发重置。
+ */
+function registerBallCollision(currentBall) {
+  const x = currentBall.x;
+  const y = currentBall.y;
+
+  if (
+    !currentBall.loopAnchor ||
+    Math.hypot(x - currentBall.loopAnchor.x, y - currentBall.loopAnchor.y) >
+      CONFIG.LOOP_REGION_RADIUS
+  ) {
+    currentBall.loopAnchor = { x, y };
+    currentBall.loopCount = 1;
+    return false;
+  }
+
+  currentBall.loopCount += 1;
+
+  if (currentBall.loopCount >= CONFIG.LOOP_COLLISION_LIMIT) {
+    triggerLoopReset(currentBall);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * 死循环兜底：
+ *   · 主球 → 清掉所有分身，回到滑块上方，恢复待发射状态；
+ *   · 分身球 → 直接移除。
+ */
+function triggerLoopReset(currentBall) {
+  if (currentBall.isClone) {
+    removeBall(currentBall);
+    return;
+  }
+
+  clearCloneBalls();
+  ball.vx = 0;
+  ball.vy = 0;
+  ball.attached = true;
+  ball.noPaddleTime = 0;
+  ball.loopAnchor = null;
+  ball.loopCount = 0;
+
+  gameState = 'ready';
+  attachBallToPaddle();
 }
 
 /* =========================================================
@@ -764,7 +914,23 @@ function startLevel(unitKey) {
   showPreview();
 }
 
-/** 预习闪卡：8 秒倒计时，依次高亮并朗读单词 */
+/**
+ * 预习时长（秒）：基础 3 秒 + 每个单词 1.5 秒。
+ * 单词越多，留给每个词的朗读时间越充足。
+ */
+function getPreviewSeconds() {
+  return (
+    CONFIG.PREVIEW_BASE_SECONDS +
+    levelWords.length * CONFIG.PREVIEW_SECONDS_PER_WORD
+  );
+}
+
+/** 秒数显示：整数不带小数点，否则保留一位小数 */
+function formatSeconds(seconds) {
+  return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
+}
+
+/** 预习闪卡：按单词数量动态倒计时，依次高亮并朗读单词 */
 function showPreview() {
   stopFlashSession();
 
@@ -775,10 +941,15 @@ function showPreview() {
   startScreen.classList.add('hidden');
   summaryScreen.classList.add('hidden');
 
+  const previewSeconds = getPreviewSeconds();
+  const totalMs = previewSeconds * 1000;
+
   flashTitle.textContent = '预习时间';
-  flashSubtitle.textContent = `先看看这些单词，${CONFIG.PREVIEW_SECONDS} 秒后开始游戏`;
+  flashSubtitle.textContent = `先看看这些单词，${formatSeconds(
+    previewSeconds
+  )} 秒后开始游戏`;
   flashTimer.classList.remove('hidden');
-  flashTimer.textContent = String(CONFIG.PREVIEW_SECONDS);
+  flashTimer.textContent = String(Math.ceil(previewSeconds));
   flashSkipBtn.textContent = '跳过预习';
   flashSkipBtn.classList.remove('hidden');
   flashContinueBtn.classList.add('hidden');
@@ -790,13 +961,9 @@ function showPreview() {
   session.onFinish = beginGameplay;
   session.skip = endFlashSession;
 
-  const totalMs = CONFIG.PREVIEW_SECONDS * 1000;
   const startedAt = performance.now();
-  // 在 8 秒内把每个单词都高亮到；单词多时自动加快切换
-  const perWordMs = Math.min(
-    1500,
-    totalMs / Math.max(1, levelWords.length)
-  );
+  // 每个单词固定朗读 1.5 秒，最后的 3 秒基础时间留给倒计时收尾
+  const perWordMs = CONFIG.PREVIEW_SECONDS_PER_WORD * 1000;
 
   let index = 0;
 
@@ -978,6 +1145,11 @@ function beginGameplay() {
   levelActive = true;
   gameState = 'ready';
 
+  clearCloneBalls();
+  ball.attached = true;
+  ball.noPaddleTime = 0;
+  ball.loopAnchor = null;
+  ball.loopCount = 0;
   attachBallToPaddle();
   ensureTargetReachable();
   updateHud();
@@ -1032,6 +1204,7 @@ function showSummary(passed) {
 /** 过关 / 失败后，稍等片刻再进入复习闪卡 */
 function finishLevel(passed) {
   levelActive = false;
+  clearCloneBalls();
 
   const token = levelToken;
   clearTimeout(levelEndTimer);
@@ -1065,9 +1238,8 @@ function showStartScreen() {
   // 把顶栏和标签页标题恢复成当前选中的 Unit
   const unit = WORD_DATA[selectedUnitKey];
   if (unit) {
-    const title = unit.title || `Unit ${unit.unit}`;
-    unitLabel.textContent = title;
-    document.title = `小又的打砖块 · ${title}`;
+    unitLabel.textContent = unit.title || `Unit ${unit.unit}`;
+    document.title = GAME_TITLE;
   }
 }
 
@@ -1105,7 +1277,7 @@ function update(dt) {
   if (gameState === 'ready') {
     attachBallToPaddle();
   } else if (gameState === 'playing' && levelActive) {
-    updateBall(dt);
+    updateBalls(dt);
   }
 }
 
@@ -1173,10 +1345,10 @@ function updatePaddle(dt) {
  * 只改变速度方向，不改变速度大小；并且限制横向速度占比，
  * 所以手感仍然是正常的反弹，不会出现明显的“拐弯”。
  */
-function applySideAssist(dt) {
+function applySideAssist(dt, currentBall) {
   if (gameState !== 'playing' || !levelActive) return;
   if (!currentTargetBrick || !currentTargetBrick.alive) return;
-  if (ball.vy >= 0) return;
+  if (currentBall.vy >= 0) return;
 
   // 找到当前最顶层砖块的 y，目标必须就在这一层
   let topY = Infinity;
@@ -1188,95 +1360,138 @@ function applySideAssist(dt) {
   if (Math.abs(currentTargetBrick.y - topY) > 0.5) return;
 
   // 小球要已经升到顶层砖块上方，才需要往砖块区里拐
-  if (ball.y >= topY) return;
+  if (currentBall.y >= topY) return;
 
-  const speed = Math.hypot(ball.vx, ball.vy);
+  const speed = Math.hypot(currentBall.vx, currentBall.vy);
   if (speed < 1) return;
 
   const range =
     CONFIG.BALL_RADIUS * 2 * CONFIG.SIDE_ASSIST_RANGE_BALL_DIAMETERS;
   let inward = 0;
 
-  if (ball.x < range) {
+  if (currentBall.x < range) {
     inward = 1;
-  } else if (ball.x > world.width - range) {
+  } else if (currentBall.x > world.width - range) {
     inward = -1;
   }
 
   if (inward === 0) return;
 
   const maxVx = speed * CONFIG.SIDE_ASSIST_MAX_VX_RATIO;
-  if (inward * ball.vx >= maxVx) return; // 已经明显向内飞，不再干预
+  if (inward * currentBall.vx >= maxVx) return; // 已经明显向内飞，不再干预
 
-  ball.vx += inward * CONFIG.SIDE_ASSIST_ACCEL * dt;
-  ball.vx =
+  currentBall.vx += inward * CONFIG.SIDE_ASSIST_ACCEL * dt;
+  currentBall.vx =
     inward > 0
-      ? Math.min(ball.vx, maxVx)
-      : Math.max(ball.vx, -maxVx);
+      ? Math.min(currentBall.vx, maxVx)
+      : Math.max(currentBall.vx, -maxVx);
 
   // 保持球速大小不变，只把多余/不足的速度分给竖直方向
-  const newVy = Math.sqrt(Math.max(0, speed * speed - ball.vx * ball.vx));
-  ball.vy = -newVy;
+  const newVy = Math.sqrt(
+    Math.max(0, speed * speed - currentBall.vx * currentBall.vx)
+  );
+  currentBall.vy = -newVy;
 }
 
 /**
- * 更新小球位置。
+ * 更新所有小球。
+ * 倒序遍历，便于安全移除到期或掉出画面的分身球。
+ */
+function updateBalls(dt) {
+  for (let i = balls.length - 1; i >= 0; i -= 1) {
+    const currentBall = balls[i];
+
+    // 分身球存活倒计时
+    if (currentBall.isClone) {
+      currentBall.life -= dt;
+      if (currentBall.life <= 0) {
+        balls.splice(i, 1);
+        continue;
+      }
+    }
+
+    if (gameState !== 'playing' || !levelActive) break;
+
+    // 连续 15 秒没碰到滑块：判定为死循环，主球回到待发射状态
+    currentBall.noPaddleTime += dt;
+    if (currentBall.noPaddleTime >= CONFIG.LOOP_NO_PADDLE_SECONDS) {
+      triggerLoopReset(currentBall);
+      if (gameState !== 'playing') break;
+      continue;
+    }
+
+    updateBall(dt, currentBall);
+
+    if (gameState !== 'playing') break;
+  }
+}
+
+/**
+ * 更新一个小球的位置。
  * 把一帧的移动拆成几个小步，避免高速穿透砖块。
  */
-function updateBall(dt) {
-  applySideAssist(dt);
+function updateBall(dt, currentBall) {
+  applySideAssist(dt, currentBall);
 
-  const speed = Math.hypot(ball.vx, ball.vy);
+  const speed = Math.hypot(currentBall.vx, currentBall.vy);
   const distance = speed * dt;
-  const maxStep = Math.max(4, ball.radius * 0.6);
+  const maxStep = Math.max(4, currentBall.radius * 0.6);
   const steps = Math.max(1, Math.ceil(distance / maxStep));
   const stepDt = dt / steps;
 
   for (let i = 0; i < steps; i += 1) {
-    if (moveBall(stepDt)) break;
+    if (moveBall(stepDt, currentBall)) break;
   }
 }
 
 /**
  * 小球移动一小步，并处理所有碰撞。
- * 返回 true 表示本帧已经结束（漏球或过关）。
+ * 返回 true 表示这个小球的这一帧已经结束（漏球、卡死或过关）。
  */
-function moveBall(dt) {
-  ball.x += ball.vx * dt;
-  ball.y += ball.vy * dt;
+function moveBall(dt, currentBall) {
+  currentBall.x += currentBall.vx * dt;
+  currentBall.y += currentBall.vy * dt;
 
   // 左右墙
-  if (ball.x - ball.radius < 0) {
-    ball.x = ball.radius;
-    ball.vx = Math.abs(ball.vx);
-  } else if (ball.x + ball.radius > world.width) {
-    ball.x = world.width - ball.radius;
-    ball.vx = -Math.abs(ball.vx);
+  if (currentBall.x - currentBall.radius < 0) {
+    currentBall.x = currentBall.radius;
+    currentBall.vx = Math.abs(currentBall.vx);
+    if (registerBallCollision(currentBall)) return true;
+  } else if (currentBall.x + currentBall.radius > world.width) {
+    currentBall.x = world.width - currentBall.radius;
+    currentBall.vx = -Math.abs(currentBall.vx);
+    if (registerBallCollision(currentBall)) return true;
   }
 
   // 顶部
-  if (ball.y - ball.radius < 0) {
-    ball.y = ball.radius;
-    ball.vy = Math.abs(ball.vy);
+  if (currentBall.y - currentBall.radius < 0) {
+    currentBall.y = currentBall.radius;
+    currentBall.vy = Math.abs(currentBall.vy);
+    if (registerBallCollision(currentBall)) return true;
   }
 
   // 砖块
-  const hit = findHitBrick();
+  const hit = findHitBrick(currentBall);
   if (hit) {
-    hitBrick(hit);
+    hitBrick(hit, currentBall);
     if (gameState !== 'playing') {
       return true;
     }
+    if (registerBallCollision(currentBall)) return true;
   }
 
   // 滑块（只在下落时接球）
-  if (ball.vy > 0 && ballHitsPaddle()) {
-    bounceOffPaddle();
+  if (currentBall.vy > 0 && ballHitsPaddle(currentBall)) {
+    bounceOffPaddle(currentBall);
   }
 
-  // 底部漏球
-  if (ball.y - ball.radius > world.height) {
-    loseLife();
+  // 底部漏球：主球扣命，分身球直接消失
+  if (currentBall.y - currentBall.radius > world.height) {
+    if (currentBall.isClone) {
+      removeBall(currentBall);
+    } else {
+      loseLife();
+    }
     return true;
   }
 
@@ -1287,10 +1502,13 @@ function moveBall(dt) {
    六、碰撞与得分
    ========================================================= */
 
-function findHitBrick() {
+function findHitBrick(currentBall) {
   for (let i = 0; i < bricks.length; i += 1) {
     const brick = bricks[i];
-    if (brick.alive && circleHitsRect(ball.x, ball.y, ball.radius, brick)) {
+    if (
+      brick.alive &&
+      circleHitsRect(currentBall.x, currentBall.y, currentBall.radius, brick)
+    ) {
       return brick;
     }
   }
@@ -1311,18 +1529,18 @@ function circleHitsRect(cx, cy, radius, rect) {
  *   目标砖 → 消除、加分、朗读、换新目标
  *   其他砖 → 不消除、不扣分，只做温和的红色提示
  */
-function hitBrick(brick) {
+function hitBrick(brick, hitBall) {
   if (brick === currentTargetBrick) {
-    handleCorrectHit(brick);
+    handleCorrectHit(brick, hitBall);
   } else {
-    handleWrongHit(brick);
+    handleWrongHit(brick, hitBall);
   }
 }
 
 /** 击中目标砖：消除、连击加分、粒子光效、朗读、换目标 */
-function handleCorrectHit(brick) {
+function handleCorrectHit(brick, hitBall) {
   brick.alive = false;
-  resolveBrickBounce(brick);
+  resolveBrickBounce(hitBall, brick);
 
   levelStats.correct += 1;
   updateCombo(combo + 1);
@@ -1354,6 +1572,7 @@ function handleCorrectHit(brick) {
     currentTargetBrick = null;
     ball.vx = 0;
     ball.vy = 0;
+    clearCloneBalls();
 
     if (window.GameAudio) {
       GameAudio.playPass();
@@ -1361,15 +1580,20 @@ function handleCorrectHit(brick) {
 
     finishLevel(true);
   } else {
+    // 连击数到达 2、4、6… 时，在命中位置分裂出一个分身球
+    if (combo > 0 && combo % CONFIG.COMBO_SPLIT_INTERVAL === 0) {
+      spawnCloneBall(hitBall);
+    }
+
     // 换新目标前做一次死局检测，只选小球打得到的砖块
     ensureTargetReachable();
   }
 }
 
 /** 击中错误砖：温和闪烁、连击清零，不消除、不扣分、不扣命 */
-function handleWrongHit(brick) {
+function handleWrongHit(brick, hitBall) {
   brick.wrongFlashUntil = performance.now() + CONFIG.WRONG_FLASH_MS;
-  resolveBrickBounce(brick);
+  resolveBrickBounce(hitBall, brick);
 
   levelStats.wrong += 1;
   updateCombo(0);
@@ -1675,56 +1899,66 @@ function ensureTargetReachable() {
  * 根据穿透深度判断小球从哪一侧撞上砖块，
  * 然后把小球推到砖块外侧并反转对应方向的速度。
  */
-function resolveBrickBounce(brick) {
-  const overlapLeft = ball.x + ball.radius - brick.x;
-  const overlapRight = brick.x + brick.width - (ball.x - ball.radius);
-  const overlapTop = ball.y + ball.radius - brick.y;
-  const overlapBottom = brick.y + brick.height - (ball.y - ball.radius);
+function resolveBrickBounce(currentBall, brick) {
+  const overlapLeft = currentBall.x + currentBall.radius - brick.x;
+  const overlapRight =
+    brick.x + brick.width - (currentBall.x - currentBall.radius);
+  const overlapTop = currentBall.y + currentBall.radius - brick.y;
+  const overlapBottom =
+    brick.y + brick.height - (currentBall.y - currentBall.radius);
 
   const overlapX = Math.min(overlapLeft, overlapRight);
   const overlapY = Math.min(overlapTop, overlapBottom);
 
   if (overlapX < overlapY) {
     if (overlapLeft < overlapRight) {
-      ball.x -= overlapLeft;
-      ball.vx = -Math.abs(ball.vx);
+      currentBall.x -= overlapLeft;
+      currentBall.vx = -Math.abs(currentBall.vx);
     } else {
-      ball.x += overlapRight;
-      ball.vx = Math.abs(ball.vx);
+      currentBall.x += overlapRight;
+      currentBall.vx = Math.abs(currentBall.vx);
     }
   } else if (overlapTop < overlapBottom) {
-    ball.y -= overlapTop;
-    ball.vy = -Math.abs(ball.vy);
+    currentBall.y -= overlapTop;
+    currentBall.vy = -Math.abs(currentBall.vy);
   } else {
-    ball.y += overlapBottom;
-    ball.vy = Math.abs(ball.vy);
+    currentBall.y += overlapBottom;
+    currentBall.vy = Math.abs(currentBall.vy);
   }
 }
 
 /** 小球是否碰到滑块（左右判定区适当加宽） */
-function ballHitsPaddle() {
-  if (ball.y + ball.radius < paddle.y) return false;
-  if (ball.y - ball.radius > paddle.y + paddle.height) return false;
+function ballHitsPaddle(currentBall) {
+  if (currentBall.y + currentBall.radius < paddle.y) return false;
+  if (currentBall.y - currentBall.radius > paddle.y + paddle.height) {
+    return false;
+  }
 
   const left = paddle.x - CONFIG.PADDLE_HIT_PAD;
   const right = paddle.x + paddle.width + CONFIG.PADDLE_HIT_PAD;
-  return ball.x >= left && ball.x <= right;
+  return currentBall.x >= left && currentBall.x <= right;
 }
 
 /** 根据击中滑块的位置决定反弹角度 */
-function bounceOffPaddle() {
+function bounceOffPaddle(currentBall) {
   const halfRange = paddle.width / 2 + CONFIG.PADDLE_HIT_PAD;
   const hitOffset = clamp(
-    (ball.x - (paddle.x + paddle.width / 2)) / halfRange,
+    (currentBall.x - (paddle.x + paddle.width / 2)) / halfRange,
     -1,
     1
   );
   const angle = hitOffset * MAX_BOUNCE_ANGLE;
-  const speed = Math.hypot(ball.vx, ball.vy) || getStartSpeed();
+  const speed =
+    Math.hypot(currentBall.vx, currentBall.vy) || getStartSpeed();
 
-  ball.vx = Math.sin(angle) * speed;
-  ball.vy = -Math.cos(angle) * speed;
-  ball.y = paddle.y - ball.radius - 0.5;
+  currentBall.vx = Math.sin(angle) * speed;
+  currentBall.vy = -Math.cos(angle) * speed;
+  currentBall.y = paddle.y - currentBall.radius - 0.5;
+
+  // 接住球说明路线正常：重置“15 秒没碰滑块”和区域碰撞计数
+  currentBall.noPaddleTime = 0;
+  currentBall.loopAnchor = null;
+  currentBall.loopCount = 0;
 }
 
 /** 漏球：扣一条命；命用完则本局失败 */
@@ -1732,9 +1966,13 @@ function loseLife() {
   lives = Math.max(0, lives - 1);
   updateHud();
 
+  clearCloneBalls();
   ball.vx = 0;
   ball.vy = 0;
   ball.attached = true;
+  ball.noPaddleTime = 0;
+  ball.loopAnchor = null;
+  ball.loopCount = 0;
   attachBallToPaddle();
 
   // 漏球也会中断连击
@@ -1764,6 +2002,9 @@ function launchBall() {
 
   gameState = 'playing';
   ball.attached = false;
+  ball.noPaddleTime = 0;
+  ball.loopAnchor = null;
+  ball.loopCount = 0;
 
   // 初始方向略微随机，避免每次路线完全相同
   const speed = getStartSpeed();
@@ -1800,7 +2041,7 @@ function draw(time) {
   drawTargetCard();
   drawBricks();
   drawPaddle();
-  drawBall();
+  drawBalls();
   drawRingEffects();
   drawParticles();
   drawComboBadge();
@@ -2112,30 +2353,67 @@ function drawPaddle() {
   ctx.fill();
 }
 
-function drawBall() {
+/** 绘制所有小球：主球暖黄色，分身球粉紫色 */
+function drawBalls() {
+  balls.forEach((currentBall) => {
+    drawSingleBall(currentBall);
+  });
+}
+
+function drawSingleBall(currentBall) {
   // 掉出画面后不再绘制
-  if (ball.y - ball.radius > world.height + 30) return;
+  if (currentBall.y - currentBall.radius > world.height + 30) return;
+
+  // 分身球最后 1 秒淡出，提醒孩子它即将消失
+  const fade =
+    currentBall.isClone && currentBall.life < 1
+      ? Math.max(0.15, currentBall.life)
+      : 1;
 
   ctx.save();
-  ctx.shadowColor = 'rgba(255, 176, 32, 0.85)';
+  ctx.globalAlpha = fade;
+  ctx.shadowColor = currentBall.isClone
+    ? 'rgba(199, 74, 234, 0.85)'
+    : 'rgba(255, 176, 32, 0.85)';
   ctx.shadowBlur = 18;
 
   const gradient = ctx.createRadialGradient(
-    ball.x - ball.radius * 0.35,
-    ball.y - ball.radius * 0.35,
-    ball.radius * 0.15,
-    ball.x,
-    ball.y,
-    ball.radius * 1.05
+    currentBall.x - currentBall.radius * 0.35,
+    currentBall.y - currentBall.radius * 0.35,
+    currentBall.radius * 0.15,
+    currentBall.x,
+    currentBall.y,
+    currentBall.radius * 1.05
   );
-  gradient.addColorStop(0, '#ffffff');
-  gradient.addColorStop(0.55, '#ffe27a');
-  gradient.addColorStop(1, '#ffb52e');
+  if (currentBall.isClone) {
+    gradient.addColorStop(0, '#ffe3fb');
+    gradient.addColorStop(0.5, '#f472d0');
+    gradient.addColorStop(1, '#b93ee0');
+  } else {
+    gradient.addColorStop(0, '#ffffff');
+    gradient.addColorStop(0.55, '#ffe27a');
+    gradient.addColorStop(1, '#ffb52e');
+  }
 
   ctx.fillStyle = gradient;
   ctx.beginPath();
-  ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+  ctx.arc(
+    currentBall.x,
+    currentBall.y,
+    currentBall.radius,
+    0,
+    Math.PI * 2
+  );
   ctx.fill();
+
+  // 分身球加一圈淡白描边，和主球区分得更明显
+  if (currentBall.isClone) {
+    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
   ctx.restore();
 }
 
@@ -2403,12 +2681,7 @@ startBtn.addEventListener('click', () => {
     GameAudio.unlock();
   }
 
-  isSlowMode = slowModeToggle.checked;
   startLevel(selectedUnitKey);
-});
-
-slowModeToggle.addEventListener('change', () => {
-  isSlowMode = slowModeToggle.checked;
 });
 
 flashSkipBtn.addEventListener('click', () => {
